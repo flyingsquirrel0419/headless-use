@@ -34,11 +34,12 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_screenshot",
-        description: "Capture a PNG screenshot and return it as a base64 image. params: {fullPage?:bool}.",
+        description: "Capture a PNG screenshot and return it as a base64 image. By default captures the viewport; set fullPage for the whole page, or element to a @g<gen>:e<num> reference to capture only that element's region.",
         schema: json!({
             "type": "object",
             "properties": {
-                "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page." }
+                "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page." },
+                "element": { "type": "string", "description": "Capture only this element's region (e.g. @g1:e3)." }
             }
         }),
     },

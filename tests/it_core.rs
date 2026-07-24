@@ -23,7 +23,7 @@ async fn launch_navigate_screenshot() {
     s.open(&srv.url("basic-form.html")).await.unwrap();
     let url = s.page().url().await.unwrap();
     assert!(url.contains("basic-form.html"));
-    let png = s.screenshot(false).await.unwrap();
+    let png = s.screenshot(false, None).await.unwrap();
     assert!(png.len() > 1000, "screenshot too small: {}", png.len());
     s.shutdown().await;
 }

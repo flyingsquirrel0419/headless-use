@@ -151,8 +151,9 @@ pub async fn mcp(args: crate::cli::ServeArgs) -> i32 {
             return 1;
         }
     };
+    let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s,
+        Ok(s) => s.with_policy_async(policy).await,
         Err(e) => return output::print_error(&e),
     };
     crate::mcp::transport::run(session).await
@@ -167,8 +168,9 @@ pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
             return 1;
         }
     };
+    let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s,
+        Ok(s) => s.with_policy_async(policy).await,
         Err(e) => return output::print_error(&e),
     };
     crate::cli::rpc::run_stdio(session).await
@@ -183,8 +185,9 @@ pub async fn run(args: RunArgs) -> i32 {
             return 1;
         }
     };
+    let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s,
+        Ok(s) => s.with_policy_async(policy).await,
         Err(e) => return output::print_error(&e),
     };
     let result = run_oneshot(&session, &args).await;
@@ -202,7 +205,23 @@ async fn run_oneshot(
     session.open(&args.url).await?;
     session.wait(Default::default()).await?;
     if let Some(path) = &args.screenshot {
-        let data = session.screenshot(args.full_page).await?;
+        let element = if let Some(ref_str) = &args.element {
+            // An element reference requires a prior observe to resolve. In
+            // one-shot mode we run observe automatically so the agent (or
+            // user) can pass --element @g1:e4 without a separate observe step.
+            let obs = session.observe().await?;
+            let (id, gen) = crate::observe::parse_ref_with_generation(ref_str)
+                .map_err(crate::browser::BrowserError::InvalidInput)?;
+            // If no generation was given, use the current observation's.
+            let gen = gen.unwrap_or(obs.generation);
+            Some(crate::session::ClickTarget::Ref {
+                id,
+                generation: Some(gen),
+            })
+        } else {
+            None
+        };
+        let data = session.screenshot(args.full_page, element).await?;
         crate::util::write_bytes(std::path::Path::new(path), &data)
             .map_err(crate::browser::BrowserError::Io)?;
         if args.launch.json {

@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — P1 features (document-feature consistency)
+- **Host allow/deny policy enforced on navigation**: `open`/`goto`/`reload` now
+  consult the `Policy` and return `NAVIGATION_BLOCKED` before any request reaches
+  the network for disallowed hosts. Configurable via `--allow-host`/`--deny-host`
+  on `serve`/`mcp`/`run`, or `Session::with_policy`. Deny list takes precedence.
+- **Element-region screenshots**: `screenshot` accepts an `element` reference
+  (`@g<gen>:e<num>`) to capture only that element's bounding box via
+  `elementFromPoint` + clip. Available in CLI (`--element`), JSON-RPC, and MCP
+  (`browser_screenshot`). One-shot `run` auto-observes to resolve the reference.
+- **Trace screenshot saving + report embedding**: screenshots are saved into the
+  run's `screenshots/` directory and embedded inline as base64 data URIs in
+  `report.html`, so the report is fully self-contained with no external images.
+
 ### Fixed — P0 release blockers (round 5)
 - **Network wait no longer misses fast requests**: `wait` now uses a
   `last_network_activity` timestamp updated on every CDP `Network.*` event

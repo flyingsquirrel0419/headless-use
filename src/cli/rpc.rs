@@ -73,7 +73,17 @@ pub async fn dispatch(
                 .get("fullPage")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let data = session.screenshot(full_page).await?;
+            // Optional element-region screenshot via a semantic reference.
+            let element = if let Some(r) = params.get("element").and_then(|v| v.as_str()) {
+                if !r.is_empty() {
+                    Some(crate::session::Session::click_target_from_ref(r)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let data = session.screenshot(full_page, element).await?;
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
             Ok(json!({ "fullPage": full_page, "bytes": data.len(), "data": b64 }))
         }

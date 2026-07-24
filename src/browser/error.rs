@@ -63,6 +63,10 @@ pub enum BrowserError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// Navigation was blocked by the host allow/deny policy.
+    #[error("navigation blocked by policy: {0}")]
+    NavigationBlocked(String),
+
     /// An opaque lower-level error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -86,6 +90,7 @@ impl BrowserError {
             BrowserError::ElementNotInteractable(_) => "ELEMENT_NOT_INTERACTABLE",
             BrowserError::StaleReference(_) => "STALE_REFERENCE",
             BrowserError::InvalidInput(_) => "INVALID_INPUT",
+            BrowserError::NavigationBlocked(_) => "NAVIGATION_BLOCKED",
             BrowserError::Io(_) => "IO_ERROR",
             BrowserError::Other(_) => "INTERNAL_ERROR",
         }
@@ -96,6 +101,7 @@ impl BrowserError {
         match self {
             BrowserError::BrowserNotFound(_) => "Install a browser or set HEADLESS_USE_BROWSER_PATH / --browser-path.".into(),
             BrowserError::LaunchFailed(_) => "Run `headless-use doctor` to check libraries and /dev/shm.".into(),
+            BrowserError::NavigationBlocked(msg) => format!("{msg}. The host is not permitted by the configured allow/deny policy."),
             BrowserError::StaleReference(r) => format!("Reference {r} is stale. Run `headless-use observe` again and use the new reference."),
             BrowserError::ElementNotFound(r) => format!("Reference {r} not found. Run `headless-use observe` to refresh references."),
             BrowserError::ElementNotInteractable(msg) => format!("{msg}. Try scrolling the element into view, closing dialogs, or re-observing."),

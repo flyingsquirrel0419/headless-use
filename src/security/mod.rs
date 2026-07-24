@@ -3,9 +3,11 @@
 //! ## Why
 //! An AI agent drives the browser, so it can navigate anywhere. To bound blast
 //! radius in CI/automation, callers may restrict navigation to specific hosts.
-//! This module defines a pluggable policy gate. NOTE: the policy type exists
-//! and is unit-tested, but it is **not yet wired into navigation** — `open`/`goto`
-//! do not consult it yet. Wiring it to navigation is on the roadmap.
+//! This module defines a pluggable policy gate. The policy is enforced by
+//! [`Session::open`]/`goto`/`reload`: navigation to a host not on the allow list
+//! (or on the deny list) returns [`BrowserError::NavigationBlocked`] before any
+//! request is made. Configure it via the CLI `--allow-host`/`--deny-host` flags
+//! or [`Session::with_policy`].
 
 use url::Url;
 

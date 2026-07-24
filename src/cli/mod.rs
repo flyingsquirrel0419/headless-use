@@ -102,6 +102,12 @@ pub struct ServeArgs {
     /// Browser launch options.
     #[command(flatten)]
     pub launch: LaunchArgs,
+    /// Restrict navigation to these hosts (repeatable). Others are blocked.
+    #[arg(long = "allow-host", value_name = "HOST")]
+    pub allow_hosts: Vec<String>,
+    /// Always block navigation to these hosts (repeatable, takes precedence).
+    #[arg(long = "deny-host", value_name = "HOST")]
+    pub deny_hosts: Vec<String>,
 }
 
 /// Run args (one-shot).
@@ -116,9 +122,18 @@ pub struct RunArgs {
     /// Full-page screenshot.
     #[arg(long)]
     pub full_page: bool,
+    /// Screenshot only this element's region by reference (e.g. @g1:e3).
+    #[arg(long)]
+    pub element: Option<String>,
     /// Browser launch options.
     #[command(flatten)]
     pub launch: LaunchArgs,
+    /// Restrict navigation to these hosts (repeatable). Others are blocked.
+    #[arg(long = "allow-host", value_name = "HOST")]
+    pub allow_hosts: Vec<String>,
+    /// Always block navigation to these hosts (repeatable, takes precedence).
+    #[arg(long = "deny-host", value_name = "HOST")]
+    pub deny_hosts: Vec<String>,
 }
 
 /// Parse compatibility mode.
@@ -127,5 +142,14 @@ fn parse_compat(s: &str) -> Result<crate::browser::launch::CompatMode, String> {
         "chromium" => Ok(crate::browser::launch::CompatMode::Chromium),
         "xvfb" => Ok(crate::browser::launch::CompatMode::Xvfb),
         other => Err(format!("unknown compat '{other}' (chromium|xvfb)")),
+    }
+}
+
+/// Build a navigation policy from allow/deny host lists.
+/// When both lists are empty the policy is permissive (allows everything).
+pub fn build_policy(allow: &[String], deny: &[String]) -> crate::security::Policy {
+    crate::security::Policy {
+        allow_hosts: allow.to_vec(),
+        deny_hosts: deny.to_vec(),
     }
 }

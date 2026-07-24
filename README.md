@@ -118,7 +118,7 @@ docker run --rm --network host headless-use \
 - **Keyboard**: down/up/press, chords (`Control+Shift+P`), type, insert-text (CJK/emoji safe), hold, repeat
 - **Observe**: DOM-based interactive-element extraction, semantic `@g<gen>:eN` references (generation-bound for stale detection), bounding boxes, stale-reference detection on any navigation
 - **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
-- **Screenshots**: viewport, full-page (element-region capture is on the roadmap)
+- **Screenshots**: viewport, full-page, element-region (`--element @eN`)
 - **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
 - **Trace**: `actions.jsonl`, `report.html` (self-contained), forced secret redaction at the writer boundary
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
@@ -234,8 +234,8 @@ wrapper.
 
 See [docs/security.md](docs/security.md). Key points: CDP binds to `127.0.0.1`
 only, secrets are masked in traces (including auto-detection of password fields),
-and file-path traversal is rejected. A host allow/deny policy scaffold exists in
-`src/security/` but is **not yet wired to navigation** (on the roadmap).
+file-path traversal is rejected, and a host allow/deny policy is enforced on
+navigation (`--allow-host`/`--deny-host`).
 
 ## Community
 

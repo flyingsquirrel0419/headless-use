@@ -26,6 +26,7 @@ use serde_json::json;
 use crate::browser::{Browser, BrowserError, LaunchOptions, Page};
 use crate::input::{Keyboard, Mouse, MouseButton};
 use crate::observe::{Observation, ObserveBuilder, RefId};
+use crate::security::Policy;
 use crate::trace::Trace;
 
 /// A long-lived browser session.
@@ -49,6 +50,9 @@ pub struct Session {
     nav_generation: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// CDP event-based network tracker for accurate in-flight request counts.
     network_tracker: Arc<tokio::sync::Mutex<network_tracker::NetworkTracker>>,
+    /// Host allow/deny navigation policy. When set, open/goto/reload consult it
+    /// and return [`BrowserError::NavigationBlocked`] for disallowed hosts.
+    policy: Arc<tokio::sync::Mutex<Policy>>,
 }
 
 impl Session {
@@ -73,6 +77,7 @@ impl Session {
             network_tracker: Arc::new(tokio::sync::Mutex::new(
                 network_tracker::NetworkTracker::new(),
             )),
+            policy: Arc::new(tokio::sync::Mutex::new(Policy::default())),
         };
         // Start CDP network tracking BEFORE any navigation so we don't miss
         // requestWillBeSent for requests already in flight.
@@ -121,6 +126,20 @@ impl Session {
         self
     }
 
+    /// Attach a host allow/deny navigation policy. When set, navigation to a
+    /// host not on the allow list (or on the deny list) returns
+    /// [`BrowserError::NavigationBlocked`] before any request is made.
+    pub fn with_policy(self, policy: Policy) -> Self {
+        *self.policy.blocking_lock() = policy;
+        self
+    }
+
+    /// Async version of [`Self::with_policy`].
+    pub async fn with_policy_async(self, policy: Policy) -> Self {
+        *self.policy.lock().await = policy;
+        self
+    }
+
     /// Current cursor position (shared state, persistent across mouse() calls).
     pub async fn cursor_position(&self) -> crate::input::Point {
         *self.cursor_pos.lock().await
@@ -160,6 +179,7 @@ impl Session {
 
     /// Navigate the active page to `url`.
     pub async fn open(&self, url: &str) -> Result<(), BrowserError> {
+        self.check_policy(url).await?;
         self.record_action("open", json!({ "url": url })).await;
         self.page.goto(url).await?;
         // nav_generation is incremented by the Page.frameNavigated listener
@@ -176,8 +196,9 @@ impl Session {
 
     /// Reload the page.
     pub async fn reload(&self) -> Result<(), BrowserError> {
-        self.record_action("reload", json!({})).await;
         let url = self.page.url().await.unwrap_or_default();
+        self.check_policy(&url).await?;
+        self.record_action("reload", json!({})).await;
         self.page.goto(&url).await
     }
 
@@ -450,11 +471,75 @@ impl Session {
         }
     }
 
-    /// Screenshot to bytes.
-    pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>, BrowserError> {
-        self.record_action("screenshot", json!({ "fullPage": full_page }))
+    /// Capture a screenshot. When `element` is `Some`, only that element's
+    /// region is captured (resolved to a clip rectangle via the current
+    /// observation, scrolling into view first). When `full_page` is true the
+    /// whole scrollable content is captured. The two are mutually exclusive:
+    /// an element clip takes precedence over `full_page`.
+    ///
+    /// When tracing is enabled, the PNG is also saved into the run's
+    /// `screenshots/` directory so it appears in `report.html`.
+    pub async fn screenshot(
+        &self,
+        full_page: bool,
+        element: Option<ClickTarget>,
+    ) -> Result<Vec<u8>, BrowserError> {
+        let clip = match &element {
+            Some(target) => {
+                let (x, y) = self.resolve_click_point(target.clone()).await?;
+                // Resolve the element bounds to a clip rectangle. We re-query
+                // the element under the resolved center point via elementFromPoint
+                // so the clip matches the actual rendered box, not just a point.
+                Some(self.element_clip_at(x, y).await?)
+            }
+            None => None,
+        };
+        let element_ref = match &element {
+            Some(ClickTarget::Ref { id, .. }) => Some(format!("@e{id}")),
+            _ => None,
+        };
+        let seq = self
+            .record_action(
+                "screenshot",
+                json!({ "fullPage": full_page, "element": element_ref }),
+            )
             .await;
-        self.page.screenshot(full_page, None).await
+        let data = self.page.screenshot(full_page, clip).await?;
+        // Save to trace so report.html can embed the image, using the same
+        // sequence number as the action so the report can match them.
+        if let Some(t) = self.trace.as_ref() {
+            let _ = t.lock().await.save_screenshot(seq, &data).await;
+        }
+        Ok(data)
+    }
+
+    /// Compute a clip rectangle for the element under viewport point (x, y).
+    /// Uses elementFromPoint to find the topmost element, then its bounding box.
+    async fn element_clip_at(&self, x: f64, y: f64) -> Result<(f64, f64, f64, f64), BrowserError> {
+        let expr = format!(
+            "(()=>{{const e=document.elementFromPoint({x},{y});if(!e)return null;const r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
+        );
+        let s = self
+            .page
+            .evaluate(&expr)
+            .await?
+            .value()
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+        if s.is_empty() || s == "null" {
+            return Err(BrowserError::ElementNotInteractable(format!(
+                "no element at ({x:.0},{y:.0}) to screenshot"
+            )));
+        }
+        let v: serde_json::Value = serde_json::from_str(&s)
+            .map_err(|e| BrowserError::Other(format!("clip parse: {e}")))?;
+        Ok((
+            v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            v.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            v.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        ))
     }
 
     /// Scroll by delta.
@@ -527,9 +612,24 @@ impl Session {
         self.browser.shutdown().await;
     }
 
-    async fn record_action(&self, kind: &str, params: serde_json::Value) {
+    /// Check the navigation policy for `url`. Returns
+    /// [`BrowserError::NavigationBlocked`] if the host is not permitted.
+    async fn check_policy(&self, url: &str) -> Result<(), BrowserError> {
+        let policy = self.policy.lock().await;
+        if let Err(denial) = policy.allows(url) {
+            return Err(BrowserError::NavigationBlocked(format!(
+                "URL '{url}' rejected: {denial}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Record an action and return its sequence number (0 if tracing is off).
+    async fn record_action(&self, kind: &str, params: serde_json::Value) -> u64 {
         if let Some(t) = self.trace.as_ref() {
-            t.lock().await.record(kind, params).await;
+            t.lock().await.record(kind, params).await
+        } else {
+            0
         }
     }
 

@@ -55,7 +55,7 @@ impl Trace {
     /// caller forgets to set `sensitive=true`, or a new action type is added
     /// that carries credentials, the trace never persists raw secrets. The
     /// masking is conservative (it may redact non-secrets) but never leaks.
-    pub async fn record(&mut self, kind: &str, params: Value) {
+    pub async fn record(&mut self, kind: &str, params: Value) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         // Final defense: mask secrets in every action's params before writing.
         // This catches password fields, tokens, API keys, and authorization
@@ -71,6 +71,7 @@ impl Trace {
             let _ = f.write_all(line.as_bytes()).await;
             let _ = f.flush().await;
         }
+        seq
     }
 
     /// Save a screenshot into the run dir.
@@ -104,7 +105,8 @@ impl Trace {
     }
 }
 
-/// Read actions.jsonl from a run dir and render report.html.
+/// Read actions.jsonl from a run dir and render report.html. Screenshot actions
+/// embed the saved PNG inline (base64) so the report is fully self-contained.
 async fn generate_report(dir: &Path) -> Result<String, std::io::Error> {
     let actions = tokio::fs::read_to_string(dir.join("actions.jsonl"))
         .await
@@ -124,8 +126,23 @@ async fn generate_report(dir: &Path) -> Result<String, std::io::Error> {
         let atype = action.get("type").and_then(|t| t.as_str()).unwrap_or("?");
         let params = action.get("params").cloned().unwrap_or(Value::Null);
         let params_str = serde_json::to_string_pretty(&params).unwrap_or_default();
+        // For screenshot actions, embed the saved PNG inline as base64 so the
+        // report is a single self-contained file with no external image deps.
+        let img_html = if atype == "screenshot" {
+            let shot_path = dir.join("screenshots").join(format!("{seq:04}.png"));
+            if let Ok(data) = tokio::fs::read(&shot_path).await {
+                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
+                format!(
+                    r#"<img src="data:image/png;base64,{b64}" style="max-width:480px;border:1px solid #ccc;margin-top:4px"/>"#
+                )
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         rows.push_str(&format!(
-            r#"<tr><td>{seq}</td><td>{ts}</td><td><code>{atype}</code></td><td><pre>{}</pre></td></tr>"#,
+            r#"<tr><td>{seq}</td><td>{ts}</td><td><code>{atype}</code></td><td><pre>{}</pre>{img_html}</td></tr>"#,
             html_escape(&params_str)
         ));
     }

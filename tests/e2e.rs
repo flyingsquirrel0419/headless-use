@@ -140,7 +140,7 @@ async fn full_e2e_login_drag_trace_screenshot() {
         .unwrap();
 
     // 8. Screenshot.
-    let png = s.screenshot(false).await.unwrap();
+    let png = s.screenshot(false, None).await.unwrap();
     assert!(png.len() > 1000);
 
     // 9. Network check (no failed requests on a static page).

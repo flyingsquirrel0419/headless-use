@@ -46,7 +46,7 @@ async fn trace_records_actions_and_writes_report() {
         .type_text("traced@example.com", Duration::ZERO, false)
         .await
         .unwrap();
-    let png = session.screenshot(false).await.unwrap();
+    let png = session.screenshot(false, None).await.unwrap();
     assert!(png.len() > 1000);
     session.shutdown().await;
 
