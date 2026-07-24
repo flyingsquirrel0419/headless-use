@@ -118,16 +118,36 @@ impl Page {
     }
 
     /// Navigate to `url` and wait for load.
+    ///
+    /// Checks `Page.navigate` response for `errorText` (e.g.
+    /// `net::ERR_BLOCKED_BY_ADMINISTRATOR`) and detects Chrome error pages
+    /// (`chrome-error://chromewebdata/`) which load successfully but indicate
+    /// a navigation failure.
     pub async fn goto(&self, url: &str) -> Result<(), BrowserError> {
-        // Enable Page domain to receive frameNavigated / loadEventFired.
         self.enable("Page.enable", None).await?;
-        self.call::<Value>(
-            "Page.navigate",
-            Some(json!({ "url": url })),
-            Duration::from_secs(30),
-        )
-        .await?;
-        self.wait_load(Duration::from_secs(30)).await
+        let result: Value = self
+            .call(
+                "Page.navigate",
+                Some(json!({ "url": url })),
+                Duration::from_secs(30),
+            )
+            .await?;
+        // Check for CDP-level navigation error.
+        if let Some(error_text) = result.get("errorText").and_then(|v| v.as_str()) {
+            return Err(BrowserError::Other(format!(
+                "navigation to '{url}' failed: {error_text}"
+            )));
+        }
+        self.wait_load(Duration::from_secs(30)).await?;
+        // Detect Chrome error pages — these load 'successfully' (readyState=complete)
+        // but indicate a real failure (DNS error, blocked, etc.).
+        let final_url = self.url().await.unwrap_or_default();
+        if final_url.starts_with("chrome-error://") {
+            return Err(BrowserError::Other(format!(
+                "navigation to '{url}' resulted in a Chrome error page ({final_url})"
+            )));
+        }
+        Ok(())
     }
 
     /// Wait for `Page.loadEventFired` (or timeout).

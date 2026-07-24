@@ -154,7 +154,7 @@ impl<'a> Mouse<'a> {
             self.dispatch(
                 "mouseMoved",
                 Point { x, y },
-                MouseButton::Left,
+                MouseButton::None,
                 buttons,
                 mods,
                 None,
@@ -170,42 +170,34 @@ impl<'a> Mouse<'a> {
     }
 
     /// Press a button down at the current position.
+    /// Accumulates into the shared buttons bitmask so multi-button states
+    /// (e.g. left+right) are correctly reported.
     pub async fn down(&self, button: MouseButton, mods: Modifiers) -> Result<(), BrowserError> {
         let p = self.position().await;
-        self.dispatch(
-            "mousePressed",
-            p,
-            button,
-            button.bitmask(),
-            mods,
-            Some(1),
-            None,
-        )
-        .await?;
-        {
+        // Compute the new cumulative buttons state BEFORE dispatching.
+        let new_buttons = {
             let mut b = self.buttons.lock().await;
             *b |= button.bitmask();
-        }
+            *b
+        };
+        self.dispatch("mousePressed", p, button, new_buttons, mods, Some(1), None)
+            .await?;
         Ok(())
     }
 
     /// Release a button at the current position.
+    /// Removes from the shared buttons bitmask so the remaining held buttons
+    /// are still reported (e.g. release right while left is still held).
     pub async fn up(&self, button: MouseButton, mods: Modifiers) -> Result<(), BrowserError> {
         let p = self.position().await;
-        self.dispatch(
-            "mouseReleased",
-            p,
-            button,
-            button.bitmask(),
-            mods,
-            Some(1),
-            None,
-        )
-        .await?;
-        {
+        // Compute the new cumulative buttons state BEFORE dispatching.
+        let new_buttons = {
             let mut b = self.buttons.lock().await;
             *b &= !button.bitmask();
-        }
+            *b
+        };
+        self.dispatch("mouseReleased", p, button, new_buttons, mods, Some(1), None)
+            .await?;
         Ok(())
     }
 
@@ -264,6 +256,9 @@ impl<'a> Mouse<'a> {
             Some(p) => p,
             None => self.position().await,
         };
+        // Wheel uses button="none" but preserves the current buttons bitmask
+        // so scrolling while holding a button reports the correct state.
+        let current_buttons = *self.buttons.lock().await;
         let steps = steps.max(1);
         let per_step_x = dx / steps as f64;
         let per_step_y = dy / steps as f64;
@@ -277,7 +272,7 @@ impl<'a> Mouse<'a> {
                 "mouseWheel",
                 at,
                 MouseButton::None,
-                0,
+                current_buttons,
                 mods,
                 None,
                 Some((per_step_x, per_step_y)),

@@ -53,7 +53,10 @@ async fn full_e2e_login_drag_trace_screenshot() {
 
     // 3. Fill the form using real keyboard input.
     s.click(
-        ClickTarget::Ref(email),
+        ClickTarget::Ref {
+            id: email,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -65,7 +68,10 @@ async fn full_e2e_login_drag_trace_screenshot() {
         .await
         .unwrap();
     s.click(
-        ClickTarget::Ref(pass),
+        ClickTarget::Ref {
+            id: pass,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -78,7 +84,10 @@ async fn full_e2e_login_drag_trace_screenshot() {
 
     // 4. Submit and verify navigation.
     s.click(
-        ClickTarget::Ref(submit),
+        ClickTarget::Ref {
+            id: submit,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,

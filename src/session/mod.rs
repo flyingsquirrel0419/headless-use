@@ -12,6 +12,7 @@
 
 pub mod console;
 pub mod network;
+pub mod network_tracker;
 pub mod wait;
 
 pub use console::{ConsoleEntry, ConsoleLevel};
@@ -42,6 +43,8 @@ pub struct Session {
     /// Navigation counter, incremented on every page navigation.
     /// Used to detect stale references after the page changes.
     nav_generation: std::sync::atomic::AtomicU32,
+    /// CDP event-based network tracker for accurate in-flight request counts.
+    network_tracker: Arc<tokio::sync::Mutex<network_tracker::NetworkTracker>>,
 }
 
 impl Session {
@@ -49,6 +52,10 @@ impl Session {
     pub async fn start(opts: LaunchOptions) -> Result<Self, BrowserError> {
         let browser = Browser::launch(opts).await?;
         let page = Arc::new(browser.new_page().await?);
+        // Start CDP network event tracking for accurate wait-until-stable.
+        // This tracks ALL requests (img, script, css, fetch, xhr) via CDP events,
+        // not just JS-wrapped fetch/XHR.
+        // (Tracker is started lazily on first wait to avoid issues during page creation.)
         Ok(Self {
             browser: Arc::new(browser),
             page,
@@ -59,6 +66,9 @@ impl Session {
             ))),
             cursor_buttons: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
             nav_generation: std::sync::atomic::AtomicU32::new(0),
+            network_tracker: Arc::new(tokio::sync::Mutex::new(
+                network_tracker::NetworkTracker::new(),
+            )),
         })
     }
 
@@ -71,6 +81,22 @@ impl Session {
     /// Current cursor position (shared state, persistent across mouse() calls).
     pub async fn cursor_position(&self) -> crate::input::Point {
         *self.cursor_pos.lock().await
+    }
+
+    /// Start the CDP network tracker (idempotent). Called automatically by
+    /// `wait` if not already started.
+    pub async fn ensure_network_tracker(&self) -> Result<(), BrowserError> {
+        let tracker = self.network_tracker.lock().await;
+        // We need to start the tracker. Since start() spawns a task that needs
+        // a mutable reference to the event subscriber, we do it once.
+        // The tracker is safe to start multiple times — the subscriber just
+        // gets replaced.
+        tracker.start(&self.page).await
+    }
+
+    /// Current in-flight network request count (via CDP events).
+    pub async fn network_pending(&self) -> u64 {
+        self.network_tracker.lock().await.pending().await
     }
 
     /// The active page.
@@ -278,7 +304,9 @@ impl Session {
 
     async fn resolve_click_point(&self, target: ClickTarget) -> Result<(f64, f64), BrowserError> {
         match target {
-            ClickTarget::Ref(id) => self.resolve_ref(id).await,
+            ClickTarget::Ref { id, generation } => {
+                self.resolve_ref_with_generation(id, generation).await
+            }
             ClickTarget::Point(p) => Ok((p.x, p.y)),
         }
     }
@@ -288,6 +316,17 @@ impl Session {
         let (id, gen) = crate::observe::parse_ref_with_generation(ref_str)
             .map_err(BrowserError::InvalidInput)?;
         self.resolve_ref_with_generation(id, gen).await
+    }
+
+    /// Build a ClickTarget from a ref string (e.g. "@e3" or "@g12:e3").
+    /// The generation is preserved so stale detection works end-to-end.
+    pub fn click_target_from_ref(ref_str: &str) -> Result<ClickTarget, BrowserError> {
+        let (id, gen) = crate::observe::parse_ref_with_generation(ref_str)
+            .map_err(BrowserError::InvalidInput)?;
+        Ok(ClickTarget::Ref {
+            id,
+            generation: gen,
+        })
     }
 
     /// Type text into the focused element.
@@ -381,7 +420,7 @@ impl Session {
 
     /// Wait until the page is stable.
     pub async fn wait(&self, opts: wait::WaitOptions) -> Result<wait::WaitResult, BrowserError> {
-        let r = wait::wait_until_stable(&self.page, opts).await?;
+        let r = wait::wait_until_stable(&self.page, opts, &self.network_tracker).await?;
         self.record_action("wait", json!({ "stable": r.stable, "reason": r.reason }))
             .await;
         Ok(r)
@@ -415,15 +454,25 @@ impl Session {
 /// Where to click: a semantic reference or a viewport point.
 #[derive(Debug, Clone)]
 pub enum ClickTarget {
-    /// A reference id from the last observe.
-    Ref(RefId),
+    /// A reference id from the last observe, with an optional generation
+    /// for stale detection. When generation is Some, resolve checks it
+    /// against the current observation's generation.
+    Ref {
+        /// The reference id from observe.
+        id: RefId,
+        /// Optional generation for stale detection.
+        generation: Option<u32>,
+    },
     /// A viewport coordinate.
     Point(crate::input::Point),
 }
 
 impl From<RefId> for ClickTarget {
     fn from(id: RefId) -> Self {
-        ClickTarget::Ref(id)
+        ClickTarget::Ref {
+            id,
+            generation: None,
+        }
     }
 }
 

@@ -37,7 +37,10 @@ async fn console_collects_errors_and_warns() {
         .map(|e| e.ref_id)
         .expect("warn button not found");
     s.click(
-        ClickTarget::Ref(warn_btn),
+        ClickTarget::Ref {
+            id: warn_btn,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -68,7 +71,10 @@ async fn network_collects_failed_and_500() {
         .map(|e| e.ref_id)
         .expect("500 button not found");
     s.click(
-        ClickTarget::Ref(bad_btn),
+        ClickTarget::Ref {
+            id: bad_btn,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -123,7 +129,10 @@ async fn stale_reference_detected_after_dom_change() {
     );
     // Click add to create an item.
     s.click(
-        ClickTarget::Ref(add_btn),
+        ClickTarget::Ref {
+            id: add_btn,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -162,7 +171,10 @@ async fn overlay_blocks_click_then_close_works() {
         .map(|e| e.ref_id)
         .expect("close button not found");
     s.click(
-        ClickTarget::Ref(close_btn),
+        ClickTarget::Ref {
+            id: close_btn,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,

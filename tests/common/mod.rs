@@ -86,6 +86,14 @@ async fn serve(listener: TcpListener, root: PathBuf) {
                     b"{\"ok\":true}".to_vec(),
                     "application/json",
                 )
+            } else if path == "slow" {
+                // Genuinely slow endpoint: sleeps 1.5s before responding.
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                (
+                    "HTTP/1.1 200 OK".to_string(),
+                    b"slow response".to_vec(),
+                    "text/plain",
+                )
             } else {
                 let file_path = if path.is_empty() {
                     root.join("basic-form.html")

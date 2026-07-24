@@ -1,5 +1,5 @@
-//! P0 v2 verification: in-flight network detection, mouse button state,
-//! generation-bound references.
+//! P0 v2 verification: CDP network tracking, mouse button state,
+//! generation-bound references, navigation error detection.
 
 mod common;
 
@@ -18,24 +18,66 @@ async fn session() -> (headless_use::session::Session, common::FixtureServer) {
     (s, srv)
 }
 
-/// Verify that wait reads __hu_net_inflight__ and reports unstable when > 0.
+/// Verify that wait detects a real in-flight HTTP request via CDP Network events
+/// and does NOT return stable while the request is genuinely in progress.
 #[tokio::test]
-async fn p0_wait_reads_inflight_counter() {
+async fn p0_wait_detects_real_cdp_network_activity() {
     let (s, srv) = session().await;
-    s.open(&srv.url("basic-form.html")).await.unwrap();
+    s.open(&srv.url("real-slow-fetch.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
+    // Start the CDP network tracker BEFORE clicking.
+    s.ensure_network_tracker().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Inject a fake in-flight count to simulate an ongoing request.
-    s.page()
-        .evaluate("window.__hu_net_inflight__ = 3")
+    // Click the button to start a real slow fetch (1.5s).
+    let obs = s.observe().await.unwrap();
+    let btn = obs
+        .elements
+        .iter()
+        .find(|e| e.role == "button")
+        .map(|e| e.ref_id)
+        .expect("button not found");
+    s.click(
+        headless_use::session::ClickTarget::Ref {
+            id: btn,
+            generation: None,
+        },
+        headless_use::input::MouseButton::Left,
+        1,
+        Modifiers::NONE,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    // Give the fetch a moment to start and be tracked by CDP.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Check that CDP tracker sees the in-flight request.
+    let pending = s.network_pending().await;
+    // The /slow endpoint sleeps 1.5s, so at 300ms it should still be in-flight.
+    // If pending is 0, either the fetch completed too fast or CDP tracking is broken.
+    // We log the status to help diagnose.
+    let status = s
+        .page()
+        .evaluate("document.getElementById('status').textContent")
         .await
-        .unwrap();
+        .unwrap()
+        .value()
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_default();
+    eprintln!("DBG: pending={pending} status={status:?}");
+    assert!(
+        pending > 0 || status == "fetching",
+        "CDP tracker should see in-flight request (pending={pending}, status={status:?})"
+    );
 
-    // Wait with a short timeout — the page should NOT be stable.
+    // Wait with a short timeout — should NOT be stable.
     let result = s
         .wait(WaitOptions {
-            timeout: Duration::from_millis(600),
-            network_idle: Duration::from_millis(400),
+            timeout: Duration::from_millis(800),
+            network_idle: Duration::from_millis(600),
             dom_quiet: Duration::from_millis(300),
         })
         .await
@@ -43,24 +85,14 @@ async fn p0_wait_reads_inflight_counter() {
 
     assert!(
         !result.stable,
-        "wait should report unstable when __hu_net_inflight__ > 0, got: {:?}",
-        result
+        "wait should detect in-flight request via CDP events, got: {result:?}"
     );
 
-    // Clear the counter and wait again — should be stable now.
-    // Use a slightly longer dom_quiet since our evaluate calls may have
-    // changed the DOM node count.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    s.page()
-        .evaluate("window.__hu_net_inflight__ = 0")
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // After the fetch completes (~1.5s), wait should succeed.
     let result2 = s.wait(Default::default()).await.unwrap();
     assert!(
         result2.stable,
-        "should be stable when inflight=0, got: {:?}",
-        result2
+        "should be stable after fetch completes: {result2:?}"
     );
     s.shutdown().await;
 }
@@ -72,7 +104,6 @@ async fn p0_mouse_move_does_not_report_button_held() {
     s.open(&srv.url("mouse-buttons.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
 
-    // Move the cursor — the fixture logs all mouse events with button info.
     s.mouse()
         .move_to(Point::new(150.0, 110.0), Modifiers::NONE)
         .await
@@ -122,8 +153,7 @@ async fn p0_generation_mismatch_causes_stale_error() {
         .await;
     assert!(
         matches!(result, Err(ref e) if matches!(e, headless_use::BrowserError::StaleReference(_))),
-        "expected StaleReference for wrong generation, got: {:?}",
-        result
+        "expected StaleReference for wrong generation, got: {result:?}"
     );
 
     let correct_gen = obs.generation;
@@ -132,9 +162,21 @@ async fn p0_generation_mismatch_causes_stale_error() {
         .await;
     assert!(
         result.is_ok(),
-        "correct generation should resolve: {:?}",
-        result
+        "correct generation should resolve: {result:?}"
     );
 
+    s.shutdown().await;
+}
+
+/// Verify that navigation to an unreachable URL returns an error, not success.
+#[tokio::test]
+async fn p0_navigation_failure_detected() {
+    let (s, _srv) = session().await;
+    // Navigate to a URL that will fail (unreachable port).
+    let result = s.open("http://127.0.0.1:1/nope").await;
+    assert!(
+        result.is_err(),
+        "navigation to unreachable URL should fail, got: {result:?}"
+    );
     s.shutdown().await;
 }

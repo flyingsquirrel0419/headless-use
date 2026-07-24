@@ -148,7 +148,10 @@ async fn keyboard_shortcut_and_text() {
         .map(|e| e.ref_id)
         .expect("input not found");
     s.click(
-        ClickTarget::Ref(inp),
+        ClickTarget::Ref {
+            id: inp,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -184,7 +187,10 @@ async fn korean_emoji_insert_text() {
         .map(|e| e.ref_id)
         .expect("input not found");
     s.click(
-        ClickTarget::Ref(inp),
+        ClickTarget::Ref {
+            id: inp,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,

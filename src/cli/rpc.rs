@@ -6,7 +6,6 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::input::{parse_point, parse_point_list, Modifiers, Point};
-use crate::observe::parse_ref;
 use crate::protocol;
 use crate::session::Session;
 
@@ -276,18 +275,16 @@ pub async fn dispatch(
 fn resolve_target(
     params: &Value,
 ) -> Result<crate::session::ClickTarget, crate::browser::BrowserError> {
-    if let Some(r) = params
-        .get("ref")
-        .and_then(|v| v.as_str())
-        .or_else(|| params.get("ref").and_then(|v| v.as_u64()).map(|_| ""))
-    {
+    if let Some(r) = params.get("ref").and_then(|v| v.as_str()) {
         if !r.is_empty() {
-            let id = parse_ref(r).map_err(crate::browser::BrowserError::InvalidInput)?;
-            return Ok(crate::session::ClickTarget::Ref(id));
+            return crate::session::Session::click_target_from_ref(r);
         }
     }
     if let Some(id) = params.get("ref").and_then(|v| v.as_u64()) {
-        return Ok(crate::session::ClickTarget::Ref(id as u32));
+        return Ok(crate::session::ClickTarget::Ref {
+            id: id as u32,
+            generation: None,
+        });
     }
     let p = parse_point_param(params)?;
     Ok(crate::session::ClickTarget::Point(p))

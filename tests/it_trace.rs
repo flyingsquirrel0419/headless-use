@@ -31,7 +31,10 @@ async fn trace_records_actions_and_writes_report() {
         .unwrap();
     session
         .click(
-            ClickTarget::Ref(email),
+            ClickTarget::Ref {
+                id: email,
+                generation: None,
+            },
             MouseButton::Left,
             1,
             Modifiers::NONE,

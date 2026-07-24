@@ -82,7 +82,10 @@ async fn click_and_type_login_flow() {
         .expect("submit not found");
 
     s.click(
-        ClickTarget::Ref(email_ref),
+        ClickTarget::Ref {
+            id: email_ref,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -95,7 +98,10 @@ async fn click_and_type_login_flow() {
         .unwrap();
 
     s.click(
-        ClickTarget::Ref(pass_ref),
+        ClickTarget::Ref {
+            id: pass_ref,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
@@ -106,7 +112,10 @@ async fn click_and_type_login_flow() {
     s.insert_text("비밀123!", false).await.unwrap();
 
     s.click(
-        ClickTarget::Ref(submit_ref),
+        ClickTarget::Ref {
+            id: submit_ref,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,

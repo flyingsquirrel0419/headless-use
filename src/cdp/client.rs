@@ -135,6 +135,13 @@ impl CdpClient {
         rx
     }
 
+    /// Async version of [`subscribe_events`]. Safe to call from async context.
+    pub async fn subscribe_events_async(&self) -> mpsc::UnboundedReceiver<CdpEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self.inner.event_tx.lock().await = Some(tx);
+        rx
+    }
+
     /// Call a CDP method with typed params, returning a typed result.
     ///
     /// Generic `T` should implement [`DeserializeOwned`]; pass `serde_json::Value`

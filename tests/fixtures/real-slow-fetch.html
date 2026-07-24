@@ -1,0 +1,14 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Real Slow Fetch</title></head>
+<body>
+<h2>Real slow fetch test</h2>
+<button id="start">Start slow fetch</button>
+<div id="status">idle</div>
+<script>
+document.getElementById('start').addEventListener('click', () => {
+  document.getElementById('status').textContent = 'fetching';
+  fetch('slow').then(r => r.text()).then(t => {
+    document.getElementById('status').textContent = 'done: ' + t;
+  });
+});
+</script>
+</body></html>

@@ -155,7 +155,10 @@ async fn p0_wait_detects_ongoing_network_activity() {
         .map(|e| e.ref_id)
         .expect("button not found");
     s.click(
-        ClickTarget::Ref(btn),
+        ClickTarget::Ref {
+            id: btn,
+            generation: None,
+        },
         MouseButton::Left,
         1,
         Modifiers::NONE,
