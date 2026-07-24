@@ -82,6 +82,21 @@ impl ElementRef {
             self.ref_id, self.role, self.name, state, val
         )
     }
+
+    /// Render with generation prefix: `[@g12:e3] button "Save"`.
+    pub fn to_compact_line_with_generation(&self, generation: u32) -> String {
+        let state = match (self.checked, self.enabled, self.focused) {
+            (Some(true), _, _) => " [checked]",
+            (Some(false), _, _) => " [unchecked]",
+            (None, false, _) => " [disabled]",
+            (None, true, true) => " [focused]",
+            _ => "",
+        };
+        format!(
+            "[@g{}:e{}] {} {:?}{}",
+            generation, self.ref_id, self.role, self.name, state
+        )
+    }
 }
 
 /// A complete observation snapshot.
@@ -162,13 +177,51 @@ impl RefRegistry {
     }
 }
 
-/// Parse a reference string like `@e3` or `e3` or `3` into a numeric id.
+/// Parse a reference string into a numeric id.
+///
+/// Accepted formats:
+/// - `@e3`, `e3`, `3` → ref id 3, generation None
+/// - `@g12:e3` → ref id 3, generation 12 (explicit generation for stale detection)
 pub fn parse_ref(s: &str) -> Result<RefId, String> {
     let s = s.trim();
     let s = s.strip_prefix('@').unwrap_or(s);
+    // Check for generation prefix: g<gen>:e<num>
+    if let Some(rest) = s.strip_prefix('g') {
+        if let Some(colon) = rest.find(':') {
+            let _gen_str = &rest[..colon];
+            let ref_part = &rest[colon + 1..];
+            let ref_part = ref_part.strip_prefix('e').unwrap_or(ref_part);
+            return ref_part
+                .parse::<RefId>()
+                .map_err(|_| format!("invalid reference '{s}' (expected @g<gen>:eN)"));
+        }
+    }
     let s = s.strip_prefix('e').unwrap_or(s);
     s.parse::<RefId>()
-        .map_err(|_| format!("invalid reference '{s}' (expected @eN or N)"))
+        .map_err(|_| format!("invalid reference '{s}' (expected @eN or @g<gen>:eN)"))
+}
+
+/// Parse a reference string that may include a generation prefix.
+/// Returns (ref_id, optional_generation).
+pub fn parse_ref_with_generation(s: &str) -> Result<(RefId, Option<u32>), String> {
+    let s = s.trim();
+    let s = s.strip_prefix('@').unwrap_or(s);
+    if let Some(rest) = s.strip_prefix('g') {
+        if let Some(colon) = rest.find(':') {
+            let gen_str = &rest[..colon];
+            let ref_part = &rest[colon + 1..];
+            let ref_part = ref_part.strip_prefix('e').unwrap_or(ref_part);
+            let gen: u32 = gen_str
+                .parse()
+                .map_err(|_| format!("invalid generation in '{s}'"))?;
+            let id: RefId = ref_part
+                .parse()
+                .map_err(|_| format!("invalid reference '{s}' (expected @g<gen>:eN)"))?;
+            return Ok((id, Some(gen)));
+        }
+    }
+    let id = parse_ref(s)?;
+    Ok((id, None))
 }
 
 /// Generate a new observation generation id. Monotonic-ish per process.
@@ -188,7 +241,23 @@ mod tests {
         assert_eq!(parse_ref("e7").unwrap(), 7);
         assert_eq!(parse_ref("12").unwrap(), 12);
         assert_eq!(parse_ref("@12").unwrap(), 12);
+        assert_eq!(parse_ref("@g5:e3").unwrap(), 3);
         assert!(parse_ref("abc").is_err());
+    }
+
+    #[test]
+    fn parse_ref_with_generation_variants() {
+        let (id, gen) = parse_ref_with_generation("@g12:e3").unwrap();
+        assert_eq!(id, 3);
+        assert_eq!(gen, Some(12));
+
+        let (id, gen) = parse_ref_with_generation("@e7").unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(gen, None);
+
+        let (id, gen) = parse_ref_with_generation("5").unwrap();
+        assert_eq!(id, 5);
+        assert_eq!(gen, None);
     }
 
     #[test]

@@ -2,8 +2,15 @@
 //!
 //! ## Why not a fixed sleep
 //! A fixed sleep is either too slow (waits when done) or flaky (returns before
-//! done). We poll cheap signals — readyState, pending network, DOM mutations —
-//! and return when they quiesce or when the timeout elapses.
+//! done). We poll cheap signals — readyState, in-flight network requests, DOM
+//! mutations — and return when they quiesce or when the timeout elapses.
+//!
+//! ## In-flight tracking
+//! The network collector (`collectors.js`) maintains `__hu_net_inflight__`, a
+//! counter incremented when a request starts and decremented when it completes
+//! (success or failure). `wait` reads this counter to detect ongoing activity.
+//! This is more accurate than filtering completed entries, which cannot see
+//! requests that have started but not yet finished.
 
 use std::time::{Duration, Instant};
 
@@ -14,11 +21,11 @@ use crate::browser::{BrowserError, Page};
 /// Options for waiting.
 #[derive(Debug, Clone)]
 pub struct WaitOptions {
-    /// Overall timeout.
+    /// Overall timeout. Default: 10 seconds.
     pub timeout: Duration,
     /// Network must be idle (no in-flight requests) for this long.
     pub network_idle: Duration,
-    /// DOM must be quiet (no mutations) for this long.
+    /// DOM must be quiet (no node-count changes) for this long.
     pub dom_quiet: Duration,
 }
 
@@ -40,7 +47,7 @@ pub struct WaitResult {
     /// Why we returned (reason string).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Pending requests count (if known).
+    /// Pending (in-flight) requests count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_requests: Option<u64>,
     /// Elapsed milliseconds.
@@ -52,9 +59,12 @@ pub async fn wait_until_stable(page: &Page, opts: WaitOptions) -> Result<WaitRes
     let start = Instant::now();
     let mut last_net_change = Instant::now();
     let mut last_dom_change = Instant::now();
+
+    // Read readyState, in-flight count, and DOM node count in one round-trip.
+    // __hu_net_inflight__ is the authoritative source for pending requests.
     let expr = r#"
     (() => {
-      const pending = (window.__hu_network__ || []).filter(e => e.status == null && !e.failed).length;
+      const pending = window.__hu_net_inflight__ || 0;
       return JSON.stringify({
         ready: document.readyState,
         pending,
@@ -93,6 +103,7 @@ pub async fn wait_until_stable(page: &Page, opts: WaitOptions) -> Result<WaitRes
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    // Timed out — report why.
     let v = page.evaluate(expr).await?;
     let s = v.value().and_then(|v| v.as_str()).unwrap_or("{}");
     let obj: Value = serde_json::from_str(s).unwrap_or(Value::Object(Default::default()));

@@ -140,7 +140,21 @@ impl Session {
     /// Uses the cached observation's generation to detect staleness, then
     /// re-queries the element's current bounds (references are positional, not
     /// cached, so a layout shift within the same generation still resolves).
+    /// Resolve a reference to a current center point.
+    ///
+    /// If `expected_generation` is provided (from `@g<gen>:e<num>` format),
+    /// it is compared against the current observation's generation. A mismatch
+    /// means the reference is stale.
     pub async fn resolve_ref(&self, ref_id: RefId) -> Result<(f64, f64), BrowserError> {
+        self.resolve_ref_with_generation(ref_id, None).await
+    }
+
+    /// Resolve a reference with an explicit expected generation for stale detection.
+    pub async fn resolve_ref_with_generation(
+        &self,
+        ref_id: RefId,
+        expected_generation: Option<u32>,
+    ) -> Result<(f64, f64), BrowserError> {
         let obs = self.last_observation().await.ok_or_else(|| {
             BrowserError::ElementNotFound("no observation; run `observe` first".to_string())
         })?;
@@ -154,6 +168,15 @@ impl Session {
                 "@e{ref_id} belongs to page generation {}, but the current page is generation {}. Run `observe` again.",
                 obs.nav_generation, current_nav
             )));
+        }
+        // Also check explicit generation from @g<gen>:e<num> format.
+        if let Some(gen) = expected_generation {
+            if gen != obs.generation {
+                return Err(BrowserError::StaleReference(format!(
+                    "@g{gen}:e{ref_id} belongs to observe generation {}, but the current generation is {}. Run `observe` again.",
+                    gen, obs.generation
+                )));
+            }
         }
         let el = obs
             .get(ref_id)
@@ -258,6 +281,13 @@ impl Session {
             ClickTarget::Ref(id) => self.resolve_ref(id).await,
             ClickTarget::Point(p) => Ok((p.x, p.y)),
         }
+    }
+
+    /// Resolve a click target from a ref string that may include generation.
+    pub async fn resolve_click_string(&self, ref_str: &str) -> Result<(f64, f64), BrowserError> {
+        let (id, gen) = crate::observe::parse_ref_with_generation(ref_str)
+            .map_err(BrowserError::InvalidInput)?;
+        self.resolve_ref_with_generation(id, gen).await
     }
 
     /// Type text into the focused element.

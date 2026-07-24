@@ -19,6 +19,10 @@ use crate::input::types::{Modifiers, Point};
 /// CDP mouse button string values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
+    /// No button — used for plain cursor moves and wheel scrolls.
+    /// CDP requires `button: "none"` when no button is pressed, otherwise
+    /// the page's JS sees `buttons: 1` (left held) on every mouseMoved.
+    None,
     /// Left button (primary).
     Left,
     /// Middle button (auxiliary).
@@ -35,6 +39,7 @@ impl MouseButton {
     /// CDP string for the `button` field.
     pub fn as_cdp(self) -> &'static str {
         match self {
+            MouseButton::None => "none",
             MouseButton::Left => "left",
             MouseButton::Middle => "middle",
             MouseButton::Right => "right",
@@ -46,6 +51,7 @@ impl MouseButton {
     /// Bitmask for the `buttons` field (which buttons are held).
     pub fn bitmask(self) -> u8 {
         match self {
+            MouseButton::None => 0,
             MouseButton::Left => 1,
             MouseButton::Right => 2,
             MouseButton::Middle => 4,
@@ -57,7 +63,8 @@ impl MouseButton {
     /// Parse from a string.
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "left" | "l" | "" => Ok(MouseButton::Left),
+            "none" | "" => Ok(MouseButton::None),
+            "left" | "l" => Ok(MouseButton::Left),
             "middle" | "m" => Ok(MouseButton::Middle),
             "right" | "r" => Ok(MouseButton::Right),
             "back" => Ok(MouseButton::Back),
@@ -103,10 +110,20 @@ impl<'a> Mouse<'a> {
         *self.pos.lock().await
     }
 
-    /// Move the cursor instantly.
+    /// Move the cursor instantly. Uses `button: "none"` so the page does not
+    /// interpret a plain move as a left-button-held move.
     pub async fn move_to(&self, p: Point, mods: Modifiers) -> Result<(), BrowserError> {
-        self.dispatch("mouseMoved", p, MouseButton::Left, 0, mods, None, None)
-            .await?;
+        let buttons = *self.buttons.lock().await;
+        self.dispatch(
+            "mouseMoved",
+            p,
+            MouseButton::None,
+            buttons,
+            mods,
+            None,
+            None,
+        )
+        .await?;
         *self.pos.lock().await = p;
         Ok(())
     }
@@ -259,7 +276,7 @@ impl<'a> Mouse<'a> {
             self.dispatch(
                 "mouseWheel",
                 at,
-                MouseButton::Middle,
+                MouseButton::None,
                 0,
                 mods,
                 None,

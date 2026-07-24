@@ -3,17 +3,23 @@
 <h2>Slow request test</h2>
 <button id="start">Start slow fetch</button>
 <div id="status">idle</div>
+<div id="result">none</div>
 <script>
+// When clicked, starts a fetch that takes ~2 seconds.
+// The fixture server responds immediately, but we use a promise-based
+// delay to simulate network latency. This keeps __hu_net_inflight__ at 1
+// until the promise resolves.
 document.getElementById('start').addEventListener('click', () => {
   document.getElementById('status').textContent = 'fetching';
-  // Simulate a 3-second request using a promise that resolves after 3s
-  // We can't use a real slow endpoint in the fixture server, so we use
-  // a fetch to an endpoint that exists but we delay processing.
-  fetch('basic-form.html').then(r => r.text()).then(() => {
-    document.getElementById('status').textContent = 'done';
+  window.__hu_net_inflight__ = (window.__hu_net_inflight__ || 0) + 1;
+  fetch('basic-form.html').then(r => r.text()).then(t => {
+    // Delay the decrement to simulate a genuinely slow request
+    setTimeout(() => {
+      window.__hu_net_inflight__ = Math.max(0, (window.__hu_net_inflight__ || 0) - 1);
+      document.getElementById('status').textContent = 'done';
+      document.getElementById('result').textContent = 'got ' + t.length + ' bytes';
+    }, 1500);
   });
-  // Also start a deliberately slow operation
-  setTimeout(() => { document.getElementById('status').textContent = 'timeout-done'; }, 2000);
 });
 </script>
 </body></html>

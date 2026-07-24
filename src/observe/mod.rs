@@ -13,7 +13,9 @@
 
 pub mod reference;
 
-pub use reference::{parse_ref, ElementRef, Observation, RefId, RefRegistry};
+pub use reference::{
+    parse_ref, parse_ref_with_generation, ElementRef, Observation, RefId, RefRegistry,
+};
 
 use serde_json::Value;
 
