@@ -1,0 +1,11 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>Click Nav</title></head>
+<body>
+<h1>Click to navigate</h1>
+<button id="go">Go to dashboard</button>
+<script>
+// A real document navigation (not pushState): triggers Page.frameNavigated.
+document.getElementById('go').addEventListener('click', () => {
+  window.location.href = 'basic-form.html';
+});
+</script>
+</body></html>

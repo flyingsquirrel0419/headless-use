@@ -3,7 +3,9 @@
 //! ## Why
 //! An AI agent drives the browser, so it can navigate anywhere. To bound blast
 //! radius in CI/automation, callers may restrict navigation to specific hosts.
-//! This module is a pluggable policy gate; the MVP enforces host allow/deny.
+//! This module defines a pluggable policy gate. NOTE: the policy type exists
+//! and is unit-tested, but it is **not yet wired into navigation** — `open`/`goto`
+//! do not consult it yet. Wiring it to navigation is on the roadmap.
 
 use url::Url;
 

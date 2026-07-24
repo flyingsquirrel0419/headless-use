@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::browser::{BrowserError, Page};
+use crate::util::secrets;
 
 /// Console message severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -67,12 +68,15 @@ pub async fn collect(page: &Page) -> Result<Vec<ConsoleEntry>, BrowserError> {
         .into_iter()
         .map(|e| {
             let level = e.get("level").and_then(|l| l.as_str()).unwrap_or("info");
-            let text = e
-                .get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            let url = e.get("url").and_then(|u| u.as_str()).map(String::from);
+            // Mask secrets in console text and source URL: console messages can
+            // echo credentials (e.g. a logged request object containing an
+            // authorization header). The final trace writer also masks, but we
+            // mask here too so `browser_console` returns safe values directly.
+            let text = secrets::mask_secret(e.get("text").and_then(|t| t.as_str()).unwrap_or(""));
+            let url = e
+                .get("url")
+                .and_then(|u| u.as_str())
+                .map(secrets::mask_url_secrets);
             let line = e.get("line").and_then(|l| l.as_i64());
             ConsoleEntry {
                 level: ConsoleLevel::from_cdp(level),

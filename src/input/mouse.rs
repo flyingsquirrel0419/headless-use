@@ -176,32 +176,58 @@ impl<'a> Mouse<'a> {
     /// Press a button down at the current position.
     /// Accumulates into the shared buttons bitmask so multi-button states
     /// (e.g. left+right) are correctly reported.
+    ///
+    /// Transactional: the shared button state is committed only after the CDP
+    /// dispatch succeeds. If dispatch fails, Rust state stays consistent with
+    /// the browser (the button is NOT recorded as held locally).
     pub async fn down(&self, button: MouseButton, mods: Modifiers) -> Result<(), BrowserError> {
         let p = self.position().await;
-        // Compute the new cumulative buttons state BEFORE dispatching.
-        let new_buttons = {
-            let mut b = self.buttons.lock().await;
-            *b |= button.bitmask();
-            *b
+        // Compute the target cumulative buttons state without committing yet.
+        let target_buttons = {
+            let b = self.buttons.lock().await;
+            *b | button.bitmask()
         };
-        self.dispatch("mousePressed", p, button, new_buttons, mods, Some(1), None)
-            .await?;
+        self.dispatch(
+            "mousePressed",
+            p,
+            button,
+            target_buttons,
+            mods,
+            Some(1),
+            None,
+        )
+        .await?;
+        // Commit only after a successful dispatch.
+        *self.buttons.lock().await = target_buttons;
         Ok(())
     }
 
     /// Release a button at the current position.
     /// Removes from the shared buttons bitmask so the remaining held buttons
     /// are still reported (e.g. release right while left is still held).
+    ///
+    /// Transactional: the shared button state is committed only after the CDP
+    /// dispatch succeeds, so a failed release does not leave local state
+    /// inconsistent with the browser.
     pub async fn up(&self, button: MouseButton, mods: Modifiers) -> Result<(), BrowserError> {
         let p = self.position().await;
-        // Compute the new cumulative buttons state BEFORE dispatching.
-        let new_buttons = {
-            let mut b = self.buttons.lock().await;
-            *b &= !button.bitmask();
-            *b
+        // Compute the target cumulative buttons state without committing yet.
+        let target_buttons = {
+            let b = self.buttons.lock().await;
+            *b & !button.bitmask()
         };
-        self.dispatch("mouseReleased", p, button, new_buttons, mods, Some(1), None)
-            .await?;
+        self.dispatch(
+            "mouseReleased",
+            p,
+            button,
+            target_buttons,
+            mods,
+            Some(1),
+            None,
+        )
+        .await?;
+        // Commit only after a successful dispatch.
+        *self.buttons.lock().await = target_buttons;
         Ok(())
     }
 
@@ -222,10 +248,11 @@ impl<'a> Mouse<'a> {
             // Accumulate button state: press adds, release removes.
             // This ensures that clicking right while left is held reports
             // buttons=3 (down) then buttons=1 (up), not 2 then 0.
+            // Transactional: commit each state change only after its dispatch
+            // succeeds, so a failure mid-click leaves local state consistent.
             let pressed_buttons = {
-                let mut b = self.buttons.lock().await;
-                *b |= button.bitmask();
-                *b
+                let b = self.buttons.lock().await;
+                *b | button.bitmask()
             };
             self.dispatch(
                 "mousePressed",
@@ -237,13 +264,13 @@ impl<'a> Mouse<'a> {
                 None,
             )
             .await?;
+            *self.buttons.lock().await = pressed_buttons;
             if !hold.is_zero() {
                 tokio::time::sleep(hold).await;
             }
             let released_buttons = {
-                let mut b = self.buttons.lock().await;
-                *b &= !button.bitmask();
-                *b
+                let b = self.buttons.lock().await;
+                *b & !button.bitmask()
             };
             self.dispatch(
                 "mouseReleased",
@@ -255,6 +282,7 @@ impl<'a> Mouse<'a> {
                 None,
             )
             .await?;
+            *self.buttons.lock().await = released_buttons;
         }
         Ok(())
     }
@@ -327,7 +355,16 @@ impl<'a> Mouse<'a> {
             let x = from.x + (to.x - from.x) * t;
             let y = from.y + (to.y - from.y) * t;
             let p = Point { x, y };
-            self.dispatch("mouseMoved", p, button, button.bitmask(), mods, None, None)
+            // Use the cumulative held-buttons mask (which includes the dragged
+            // button pressed in down() above plus any other held buttons) so
+            // intermediate moves report the correct `buttons` value. Using just
+            // `button.bitmask()` would drop already-held buttons (e.g. right
+            // held + left drag would report buttons=1 instead of 3 mid-drag).
+            // The `button` field uses the dragged button (not None) so Chrome's
+            // pointer-capture for native controls (range slider, etc.) stays
+            // active and pointermove events fire during the drag.
+            let held = *self.buttons.lock().await;
+            self.dispatch("mouseMoved", p, button, held, mods, None, None)
                 .await?;
             // Update tracked cursor position so up() releases at the correct spot.
             *self.pos.lock().await = p;
@@ -371,7 +408,12 @@ impl<'a> Mouse<'a> {
                 let x = from.x + (to.x - from.x) * t;
                 let y = from.y + (to.y - from.y) * t;
                 let p = Point { x, y };
-                self.dispatch("mouseMoved", p, button, button.bitmask(), mods, None, None)
+                // Cumulative held-buttons mask so already-held buttons are not
+                // dropped mid-drag (see drag() for the rationale). The `button`
+                // field uses the dragged button so Chrome pointer-capture stays
+                // active for native controls.
+                let held = *self.buttons.lock().await;
+                self.dispatch("mouseMoved", p, button, held, mods, None, None)
                     .await?;
                 *self.pos.lock().await = p;
                 if !inner.is_zero() {

@@ -40,9 +40,13 @@ pub struct Session {
     cursor_pos: std::sync::Arc<tokio::sync::Mutex<crate::input::Point>>,
     /// Persistent button state shared across all Mouse instances.
     cursor_buttons: std::sync::Arc<tokio::sync::Mutex<u8>>,
-    /// Navigation counter, incremented on every page navigation.
-    /// Used to detect stale references after the page changes.
-    nav_generation: std::sync::atomic::AtomicU32,
+    /// Navigation counter, incremented on every main-frame document change.
+    /// Driven by CDP `Page.frameNavigated` (subscribed in [`Session::start`]),
+    /// so ANY navigation invalidates references: button-click nav, form submit,
+    /// redirect, `location.href`, reload, history back/forward — not just
+    /// explicit `Session::open`. Stored behind an `Arc` so the background
+    /// `frameNavigated` listener task can increment it without borrowing `self`.
+    nav_generation: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// CDP event-based network tracker for accurate in-flight request counts.
     network_tracker: Arc<tokio::sync::Mutex<network_tracker::NetworkTracker>>,
 }
@@ -65,7 +69,7 @@ impl Session {
                 0.0, 0.0,
             ))),
             cursor_buttons: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
-            nav_generation: std::sync::atomic::AtomicU32::new(0),
+            nav_generation: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             network_tracker: Arc::new(tokio::sync::Mutex::new(
                 network_tracker::NetworkTracker::new(),
             )),
@@ -78,6 +82,36 @@ impl Session {
             .await
             .start(&session.page)
             .await?;
+        // Subscribe to Page.frameNavigated so ANY main-frame document change
+        // increments the navigation generation and invalidates observe
+        // references. This catches button-click navigation, form submit,
+        // redirect, location.href, reload, and history navigation — all of
+        // which would otherwise leave stale references usable.
+        // The broadcast event bus means this subscriber coexists with the
+        // network tracker's subscriber.
+        let page_client = session.page.cdp().clone();
+        let nav_gen = session.nav_generation.clone();
+        let mut page_events = page_client.subscribe_events_async().await;
+        tokio::spawn(async move {
+            while let Some(ev) = page_events.recv().await {
+                if ev.method == "Page.frameNavigated" {
+                    // Only invalidate on top-level (main frame) navigations.
+                    // A frame with no parentId is the main frame. Same-document
+                    // navigations (fragments, pushState) arrive as
+                    // Page.navigatedWithinDocument and do not invalidate refs.
+                    let is_main = ev
+                        .params
+                        .get("frame")
+                        .and_then(|f| f.get("parentId"))
+                        .is_none();
+                    if is_main {
+                        nav_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+        // Ensure Page domain is enabled so frameNavigated is delivered.
+        let _ = session.page.enable("Page.enable", None).await;
         Ok(session)
     }
 
@@ -90,6 +124,15 @@ impl Session {
     /// Current cursor position (shared state, persistent across mouse() calls).
     pub async fn cursor_position(&self) -> crate::input::Point {
         *self.cursor_pos.lock().await
+    }
+
+    /// Current navigation generation value. Increments on every main-frame
+    /// document change via `Page.frameNavigated`. Exposed for diagnostics and
+    /// tests; production callers use `resolve_ref` which checks staleness
+    /// internally.
+    pub fn nav_generation_value(&self) -> u32 {
+        self.nav_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Ensure the CDP network tracker is running. It is started in
@@ -119,8 +162,10 @@ impl Session {
     pub async fn open(&self, url: &str) -> Result<(), BrowserError> {
         self.record_action("open", json!({ "url": url })).await;
         self.page.goto(url).await?;
-        self.nav_generation
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // nav_generation is incremented by the Page.frameNavigated listener
+        // spawned in start(). We do NOT bump it here to avoid double-counting:
+        // every real document change (including this navigation) fires
+        // frameNavigated, which is the single source of truth for generation.
         Ok(())
     }
 
@@ -336,12 +381,21 @@ impl Session {
     }
 
     /// Type text into the focused element.
+    ///
+    /// Auto-detects password fields: if the focused element is a password input
+    /// (type=password or autocomplete includes password), the text is treated
+    /// as sensitive and redacted in the trace even when the caller did not pass
+    /// `sensitive=true`. This prevents accidental password leakage when an
+    /// agent forgets the flag. A final masking pass in `Trace::record` also
+    /// redacts any key/value whose name looks like a secret.
     pub async fn type_text(
         &self,
         text: &str,
         delay: Duration,
         sensitive: bool,
     ) -> Result<(), BrowserError> {
+        let auto_sensitive = self.is_focused_sensitive().await;
+        let sensitive = sensitive || auto_sensitive;
         let payload = if sensitive {
             json!({ "text": "[REDACTED]", "sensitive": true })
         } else {
@@ -458,9 +512,11 @@ impl Session {
         console::collect(&self.page).await
     }
 
-    /// Collect network entries.
+    /// Collect network entries from the shared CDP-derived request history.
+    /// This is the same history `wait` uses, so diagnostics and stability
+    /// checks always agree on what happened.
     pub async fn network(&self) -> Result<Vec<NetworkEntry>, BrowserError> {
-        network::collect(&self.page).await
+        network::collect(&self.page, &self.network_tracker).await
     }
 
     /// Shut down the session, flushing trace.
@@ -475,6 +531,14 @@ impl Session {
         if let Some(t) = self.trace.as_ref() {
             t.lock().await.record(kind, params).await;
         }
+    }
+
+    /// Record an arbitrary action with raw params (for tests verifying the
+    /// final secret-masking defense layer in `Trace::record`). Production code
+    /// should use the typed action methods instead.
+    #[doc(hidden)]
+    pub async fn record_action_raw(&self, kind: &str, params: serde_json::Value) {
+        self.record_action(kind, params).await;
     }
 }
 

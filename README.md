@@ -27,7 +27,7 @@ on every step. `headless-use` is agent-centric:
 | ------------------------------------- | ----------------------------------------- |
 | Writing test code                     | Real-time agent operation                 |
 | CSS selectors                         | Coordinates **and** semantic references  |
-| DOM only                              | Screenshot + AX/DOM + Console + Network   |
+| DOM only                              | Screenshot + DOM + Console + Network       |
 | Node.js dependency common             | Single Rust binary                        |
 | Local desktop focused                 | Headless Linux, Docker, CI first          |
 | Result only                           | Session trace, diagnostic report |
@@ -116,11 +116,11 @@ docker run --rm --network host headless-use \
 - **Real input**: `Input.dispatchMouseEvent`, `dispatchKeyEvent`, `insertText`
 - **Mouse**: move, click (left/right/middle/back/forward), double/triple, down/up, hold, hover, wheel scroll, drag (interpolated), drag-path
 - **Keyboard**: down/up/press, chords (`Control+Shift+P`), type, insert-text (CJK/emoji safe), hold, repeat
-- **Observe**: accessibility/DOM extraction, semantic `@eN` references, bounding boxes, stale-reference detection
-- **Diagnostics**: console + uncaught errors, network (fetch/XHR) with secret masking, wait-until-stable
-- **Screenshots**: viewport, full-page, element
+- **Observe**: DOM-based interactive-element extraction, semantic `@g<gen>:eN` references (generation-bound for stale detection), bounding boxes, stale-reference detection on any navigation
+- **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
+- **Screenshots**: viewport, full-page (element-region capture is on the roadmap)
 - **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
-- **Trace**: `actions.jsonl`, screenshots, `report.html` (self-contained), secret redaction
+- **Trace**: `actions.jsonl`, `report.html` (self-contained), forced secret redaction at the writer boundary
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
 
 ## MCP server
@@ -233,8 +233,9 @@ wrapper.
 ## Security
 
 See [docs/security.md](docs/security.md). Key points: CDP binds to `127.0.0.1`
-only, secrets are masked in traces, file paths are validated, and a host allow/deny policy layer is available
-(see `src/security/`).
+only, secrets are masked in traces (including auto-detection of password fields),
+and file-path traversal is rejected. A host allow/deny policy scaffold exists in
+`src/security/` but is **not yet wired to navigation** (on the roadmap).
 
 ## Community
 

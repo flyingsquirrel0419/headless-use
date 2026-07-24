@@ -52,6 +52,11 @@ pub struct ElementRef {
         default
     )]
     pub selector_hint: String,
+    /// The canonical reference token (`@g<gen>:e<num>`), populated after the
+    /// registry assigns a generation. Agents should use this token directly for
+    /// clicks/hovers so the generation is always carried for stale detection.
+    #[serde(rename = "ref", skip_serializing_if = "String::is_empty", default)]
+    pub ref_token: String,
 }
 
 impl ElementRef {
@@ -61,6 +66,22 @@ impl ElementRef {
             self.x as f64 + self.width as f64 / 2.0,
             self.y as f64 + self.height as f64 / 2.0,
         )
+    }
+
+    /// The canonical reference token for this element in the given generation.
+    ///
+    /// Always of the form `@g<generation>:e<ref_id>` so an agent carries the
+    /// generation bound to the reference. `resolve_ref_with_generation` then
+    /// detects a stale reference whose generation no longer matches the current
+    /// page, even if the same `e<num>` was reused after a navigation.
+    pub fn to_ref_token(&self, generation: u32) -> String {
+        format!("@g{}:e{}", generation, self.ref_id)
+    }
+
+    /// Stamp the canonical `ref` token onto this element for `generation`.
+    /// Called by the registry after assigning a ref id and generation.
+    pub fn stamp_ref_token(&mut self, generation: u32) {
+        self.ref_token = self.to_ref_token(generation);
     }
 
     /// Render as a compact one-line text line with generation prefix.
@@ -133,7 +154,7 @@ impl Observation {
             s.push_str("No interactive elements found.\n");
         } else {
             for el in &self.elements {
-                s.push_str(&el.to_compact_line(1));
+                s.push_str(&el.to_compact_line(self.generation));
                 s.push('\n');
             }
         }
@@ -162,10 +183,13 @@ impl RefRegistry {
         }
     }
 
-    /// Insert an element, assigning it the next ref id in reading order.
+    /// Insert an element, assigning it the next ref id in reading order and
+    /// stamping the canonical `@g<gen>:e<num>` token using the registry's
+    /// generation so the serialized element always carries its generation.
     pub fn insert(&mut self, mut el: ElementRef) {
         let id = (self.inner.len() as RefId) + 1;
         el.ref_id = id;
+        el.stamp_ref_token(self.generation);
         self.inner.insert(id, el);
     }
 
@@ -281,6 +305,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            ref_token: String::new(),
         });
         r.insert(ElementRef {
             ref_id: 0,
@@ -297,6 +322,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            ref_token: String::new(),
         });
         let v = r.into_sorted();
         assert_eq!(v.len(), 2);
@@ -321,6 +347,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            ref_token: String::new(),
         };
         let (cx, cy) = e.center();
         assert_eq!(cx, 120.0);

@@ -1,0 +1,19 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mouse State</title></head>
+<body><h2>Mouse button state recorder</h2>
+<div id="target" style="width:400px;height:300px;background:#eef;border:2px solid #39c">Drag here</div>
+<div id="log"></div>
+<script>
+// Records the exact event sequence with type, button, and buttons bitmask so
+// tests can verify cumulative multi-button state during drag.
+const log = document.getElementById('log');
+const t = document.getElementById('target');
+const entries = [];
+window.__hu_mstate__ = entries;
+const names = {0:'none',1:'left',2:'right',4:'middle',8:'back',16:'forward'};
+function rec(e){
+  entries.push({type:e.type, button:e.button, buttons:e.buttons, x:Math.round(e.clientX), y:Math.round(e.clientY)});
+  log.textContent = entries.map(e=>e.type+':buttons='+e.buttons).join(' | ');
+}
+for(const ev of ['mousedown','mousemove','mouseup']) t.addEventListener(ev, rec);
+t.addEventListener('contextmenu', e=>e.preventDefault());
+</script></body></html>

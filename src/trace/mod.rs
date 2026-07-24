@@ -1,10 +1,11 @@
-//! Action trace recording + replay + report generation.
+//! Action trace recording + report generation (replay is on the roadmap).
 //!
 //! ## Why
 //! When an agent's browser session misbehaves, the most useful artifact is a
 //! faithful record of what it did and what the page did in response. We record
-//! every action as a JSONL line plus screenshots, and can replay the action
-//! sequence. The `report.html` is a self-contained static file (no external
+//! every action as a JSONL line, and generates a self-contained `report.html`.
+//! (Replay of the action sequence is on the roadmap.) The `report.html` is a
+//! self-contained static file (no external
 //! deps) for sharing.
 
 use std::path::{Path, PathBuf};
@@ -49,12 +50,21 @@ impl Trace {
     }
 
     /// Record an action.
+    ///
+    /// Secrets are masked at this boundary as a final defense layer: even if a
+    /// caller forgets to set `sensitive=true`, or a new action type is added
+    /// that carries credentials, the trace never persists raw secrets. The
+    /// masking is conservative (it may redact non-secrets) but never leaks.
     pub async fn record(&mut self, kind: &str, params: Value) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        // Final defense: mask secrets in every action's params before writing.
+        // This catches password fields, tokens, API keys, and authorization
+        // headers regardless of whether the caller flagged sensitivity.
+        let safe_params = util::secrets::mask_json(&params);
         let entry = json!({
             "sequence": seq,
             "timestampMs": self.start.elapsed().as_millis() as u64,
-            "action": { "type": kind, "params": params },
+            "action": { "type": kind, "params": safe_params },
         });
         if let Some(f) = self.actions_file.as_mut() {
             let line = format!("{}\n", entry);

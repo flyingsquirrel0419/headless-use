@@ -79,7 +79,7 @@ pub async fn dispatch(
         }
         "click" => {
             let target = resolve_target(params)?;
-            let button = parse_button(params);
+            let button = parse_button(params)?;
             let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
             let mods = parse_modifiers_param(params);
             let hold_ms = params.get("hold").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -99,12 +99,12 @@ pub async fn dispatch(
             Ok(json!({ "pointer": { "x": p.x, "y": p.y } }))
         }
         "mouse.down" => {
-            let b = parse_button(params);
+            let b = parse_button(params)?;
             session.mouse().down(b, Modifiers::NONE).await?;
             Ok(json!({ "success": true }))
         }
         "mouse.up" => {
-            let b = parse_button(params);
+            let b = parse_button(params)?;
             session.mouse().up(b, Modifiers::NONE).await?;
             Ok(json!({ "success": true }))
         }
@@ -320,12 +320,21 @@ fn parse_named_point(params: &Value, name: &str) -> Result<Point, crate::browser
     )))
 }
 
-fn parse_button(params: &Value) -> crate::input::MouseButton {
-    params
-        .get("button")
-        .and_then(|v| v.as_str())
-        .and_then(|s| crate::input::MouseButton::parse(s).ok())
-        .unwrap_or(crate::input::MouseButton::Left)
+/// Parse the `button` field from params, returning INVALID_INPUT for unknown
+/// values instead of silently falling back to Left.
+///
+/// ## Why reject unknown buttons
+/// A typo like `"rgiht"` previously produced a Left click with no error, which
+/// is dangerous in agent automation: the wrong button is pressed and the agent
+/// has no signal that its input was malformed. Returning a structured
+/// INVALID_INPUT error lets the agent correct and retry.
+fn parse_button(params: &Value) -> Result<crate::input::MouseButton, crate::browser::BrowserError> {
+    match params.get("button").and_then(|v| v.as_str()) {
+        None => Ok(crate::input::MouseButton::Left),
+        Some(s) => {
+            crate::input::MouseButton::parse(s).map_err(crate::browser::BrowserError::InvalidInput)
+        }
+    }
 }
 
 fn parse_modifiers_param(params: &Value) -> Modifiers {

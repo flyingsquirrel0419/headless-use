@@ -113,7 +113,7 @@ pub async fn doctor() -> i32 {
 /// Run the `launch` command.
 pub async fn launch(args: LaunchArgs) -> i32 {
     let opts = match args.to_launch_options() {
-        Ok(o) => o,
+        Ok(o) => o.with_no_sandbox_for_root(),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -145,7 +145,7 @@ pub async fn launch(args: LaunchArgs) -> i32 {
 /// Run the `mcp` command: MCP server over stdio.
 pub async fn mcp(args: crate::cli::ServeArgs) -> i32 {
     let opts = match args.launch.to_launch_options() {
-        Ok(o) => o,
+        Ok(o) => o.with_no_sandbox_for_root(),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -161,7 +161,7 @@ pub async fn mcp(args: crate::cli::ServeArgs) -> i32 {
 /// Run the `serve` command (JSON-RPC over stdio).
 pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
     let opts = match args.launch.to_launch_options() {
-        Ok(o) => o,
+        Ok(o) => o.with_no_sandbox_for_root(),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -177,7 +177,7 @@ pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
 /// Run the `run` one-shot command.
 pub async fn run(args: RunArgs) -> i32 {
     let opts = match args.launch.to_launch_options() {
-        Ok(o) => o,
+        Ok(o) => o.with_no_sandbox_for_root(),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;

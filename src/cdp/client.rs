@@ -7,6 +7,15 @@
 //!   - fans out unsolicited CDP events to subscribers,
 //!   - supports timeouts and cancellation on drop.
 //!
+//! ## Why a broadcast event bus (not a single subscriber)
+//! The previous design stored a single `event_tx`. Calling `subscribe_events`
+//! a second time silently replaced the first subscriber, so the Network tracker,
+//! the `Page.frameNavigated` generation listener, and the console collector
+//! could not coexist. We now keep a `Vec` of senders so every subsystem that
+//! needs CDP events gets its own receiver. This is the foundation that lets
+//! `wait` use `Network.*` events while the session independently listens for
+//! `Page.frameNavigated` to invalidate observe references.
+//!
 //! ## Why not expose raw JSON
 //! Raw CDP responses are loosely-typed `serde_json::Value`. Each domain method
 //! here returns a typed struct (or `()` when there is no useful payload), so
@@ -38,7 +47,13 @@ pub struct CdpEvent {
 struct Inner {
     next_id: Mutex<u64>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>,
-    event_tx: Mutex<Option<mpsc::UnboundedSender<CdpEvent>>>,
+    /// All active event subscribers. Every `subscribe_events_async` call adds a
+    /// sender here; the reader task fans each event out to all of them.
+    /// Why a Vec instead of a single Option: multiple subsystems (Network
+    /// tracker, Page.frameNavigated listener, console collector) need CDP
+    /// events concurrently. A single slot would silently drop the previous
+    /// subscriber.
+    subscribers: Mutex<Vec<mpsc::UnboundedSender<CdpEvent>>>,
     closed: Notify,
     closed_flag: Mutex<bool>,
 }
@@ -65,7 +80,7 @@ impl CdpClient {
         let inner = Arc::new(Inner {
             next_id: Mutex::new(0),
             pending: Mutex::new(HashMap::new()),
-            event_tx: Mutex::new(None),
+            subscribers: Mutex::new(Vec::new()),
             closed: Notify::new(),
             closed_flag: Mutex::new(false),
         });
@@ -127,18 +142,22 @@ impl CdpClient {
         })
     }
 
-    /// Subscribe to unsolicited CDP events. Only one active subscriber is
-    /// supported per client; calling again replaces the previous subscriber.
+    /// Subscribe to unsolicited CDP events. Multiple subscribers are supported
+    /// concurrently; each call returns an independent receiver and the event is
+    /// fanned out to all of them. This lets the Network tracker, the
+    /// `Page.frameNavigated` generation listener, and any other subsystem
+    /// receive events at the same time.
     pub fn subscribe_events(&self) -> mpsc::UnboundedReceiver<CdpEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
-        *self.inner.event_tx.blocking_lock() = Some(tx);
+        self.inner.subscribers.blocking_lock().push(tx);
         rx
     }
 
     /// Async version of [`subscribe_events`]. Safe to call from async context.
+    /// Each call registers a new subscriber without disturbing existing ones.
     pub async fn subscribe_events_async(&self) -> mpsc::UnboundedReceiver<CdpEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
-        *self.inner.event_tx.lock().await = Some(tx);
+        self.inner.subscribers.lock().await.push(tx);
         rx
     }
 
@@ -263,10 +282,11 @@ async fn route_message(inner: &Arc<Inner>, text: &str) -> Result<(), CdpError> {
             method: method.to_string(),
             params,
         };
-        let tx = inner.event_tx.lock().await;
-        if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(event);
-        }
+        // Fan out to every subscriber. Drop any whose receiver is gone so the
+        // list doesn't grow unbounded over a long session.
+        let mut subs = inner.subscribers.lock().await;
+        // retain keeps only senders whose receiver is still alive.
+        subs.retain(|tx| tx.send(event.clone()).is_ok());
     }
     Ok(())
 }
