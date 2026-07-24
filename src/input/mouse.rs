@@ -60,16 +60,20 @@ impl MouseButton {
         }
     }
 
-    /// Parse from a string.
+    /// Parse from a string for public API use.
+    /// "none" is internal-only (for CDP moves) and rejected here so that
+    /// typos like "rgiht" don't silently fall back to left.
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "none" | "" => Ok(MouseButton::None),
+            "" => Ok(MouseButton::Left),
             "left" | "l" => Ok(MouseButton::Left),
             "middle" | "m" => Ok(MouseButton::Middle),
             "right" | "r" => Ok(MouseButton::Right),
             "back" => Ok(MouseButton::Back),
             "forward" => Ok(MouseButton::Forward),
-            other => Err(format!("unknown mouse button '{other}'")),
+            other => Err(format!(
+                "unknown mouse button '{other}'. Allowed: left, middle, right, back, forward"
+            )),
         }
     }
 }
@@ -215,11 +219,19 @@ impl<'a> Mouse<'a> {
         }
         self.move_to(p, mods).await?;
         for i in 1..=count {
+            // Accumulate button state: press adds, release removes.
+            // This ensures that clicking right while left is held reports
+            // buttons=3 (down) then buttons=1 (up), not 2 then 0.
+            let pressed_buttons = {
+                let mut b = self.buttons.lock().await;
+                *b |= button.bitmask();
+                *b
+            };
             self.dispatch(
                 "mousePressed",
                 p,
                 button,
-                button.bitmask(),
+                pressed_buttons,
                 mods,
                 Some(i),
                 None,
@@ -228,11 +240,16 @@ impl<'a> Mouse<'a> {
             if !hold.is_zero() {
                 tokio::time::sleep(hold).await;
             }
+            let released_buttons = {
+                let mut b = self.buttons.lock().await;
+                *b &= !button.bitmask();
+                *b
+            };
             self.dispatch(
                 "mouseReleased",
                 p,
                 button,
-                button.bitmask(),
+                released_buttons,
                 mods,
                 Some(i),
                 None,

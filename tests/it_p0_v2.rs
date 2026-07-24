@@ -25,9 +25,6 @@ async fn p0_wait_detects_real_cdp_network_activity() {
     let (s, srv) = session().await;
     s.open(&srv.url("real-slow-fetch.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    // Start the CDP network tracker BEFORE clicking.
-    s.ensure_network_tracker().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Click the button to start a real slow fetch (1.5s).
     let obs = s.observe().await.unwrap();

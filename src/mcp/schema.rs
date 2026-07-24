@@ -44,7 +44,7 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_click",
-        description: "Click an element. Prefer a reference (@eN) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click.",
+        description: "Click an element. Prefer a generation-bound reference (@g<gen>:e<num>) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click.",
         schema: json!({
             "type": "object",
             "properties": {
@@ -60,7 +60,7 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_hover",
-        description: "Hover an element by @eN reference or {x,y} coordinate.",
+        description: "Hover an element by @g<gen>:e<num> reference or {x,y} coordinate.",
         schema: json!({
             "type": "object",
             "properties": {

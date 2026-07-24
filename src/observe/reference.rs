@@ -63,8 +63,11 @@ impl ElementRef {
         )
     }
 
-    /// Render as a compact one-line text line, e.g. `[@e3] button "로그인"`.
-    pub fn to_compact_line(&self) -> String {
+    /// Render as a compact one-line text line with generation prefix.
+    /// e.g. `[@g12:e3] button "로그인"`.
+    /// The generation prefix is the canonical reference format so agents
+    /// always carry generation for stale detection.
+    pub fn to_compact_line(&self, generation: u32) -> String {
         let state = match (self.checked, self.enabled, self.focused) {
             (Some(true), _, _) => " [checked]",
             (Some(false), _, _) => " [unchecked]",
@@ -78,8 +81,8 @@ impl ElementRef {
             .map(|v| format!(" = {v:?}"))
             .unwrap_or_default();
         format!(
-            "[@e{}] {} {:?}{}{}",
-            self.ref_id, self.role, self.name, state, val
+            "[@g{}:e{}] {} {:?}{}{}",
+            generation, self.ref_id, self.role, self.name, state, val
         )
     }
 
@@ -130,7 +133,7 @@ impl Observation {
             s.push_str("No interactive elements found.\n");
         } else {
             for el in &self.elements {
-                s.push_str(&el.to_compact_line());
+                s.push_str(&el.to_compact_line(1));
                 s.push('\n');
             }
         }

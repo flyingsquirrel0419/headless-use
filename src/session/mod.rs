@@ -56,7 +56,7 @@ impl Session {
         // This tracks ALL requests (img, script, css, fetch, xhr) via CDP events,
         // not just JS-wrapped fetch/XHR.
         // (Tracker is started lazily on first wait to avoid issues during page creation.)
-        Ok(Self {
+        let session = Self {
             browser: Arc::new(browser),
             page,
             trace: None,
@@ -69,7 +69,16 @@ impl Session {
             network_tracker: Arc::new(tokio::sync::Mutex::new(
                 network_tracker::NetworkTracker::new(),
             )),
-        })
+        };
+        // Start CDP network tracking BEFORE any navigation so we don't miss
+        // requestWillBeSent for requests already in flight.
+        session
+            .network_tracker
+            .lock()
+            .await
+            .start(&session.page)
+            .await?;
+        Ok(session)
     }
 
     /// Attach tracing.
@@ -83,15 +92,12 @@ impl Session {
         *self.cursor_pos.lock().await
     }
 
-    /// Start the CDP network tracker (idempotent). Called automatically by
-    /// `wait` if not already started.
+    /// Ensure the CDP network tracker is running. It is started in
+    /// [`Session::start`], so this is typically a no-op, but kept for safety.
     pub async fn ensure_network_tracker(&self) -> Result<(), BrowserError> {
-        let tracker = self.network_tracker.lock().await;
-        // We need to start the tracker. Since start() spawns a task that needs
-        // a mutable reference to the event subscriber, we do it once.
-        // The tracker is safe to start multiple times — the subscriber just
-        // gets replaced.
-        tracker.start(&self.page).await
+        // Tracker is already started in Session::start(). This is a no-op
+        // but kept for backward compatibility and defensive use.
+        Ok(())
     }
 
     /// Current in-flight network request count (via CDP events).
@@ -346,7 +352,10 @@ impl Session {
     }
 
     /// Insert text (CJK/emoji friendly).
+    /// Auto-detects password fields for trace redaction.
     pub async fn insert_text(&self, text: &str, sensitive: bool) -> Result<(), BrowserError> {
+        let auto_sensitive = self.is_focused_sensitive().await;
+        let sensitive = sensitive || auto_sensitive;
         let payload = if sensitive {
             json!({ "text": "[REDACTED]", "sensitive": true })
         } else {
@@ -354,6 +363,24 @@ impl Session {
         };
         self.record_action("insert-text", payload).await;
         self.keyboard().insert_text(text).await
+    }
+
+    /// Check if the currently focused element is a password/sensitive field.
+    async fn is_focused_sensitive(&self) -> bool {
+        let expr = r#"(() => {
+            const el = document.activeElement;
+            if (!el) return false;
+            if (el.type === 'password') return true;
+            const ac = el.getAttribute('autocomplete') || '';
+            if (ac.includes('password') || ac.includes('current-password') || ac.includes('new-password')) return true;
+            return false;
+        })()"#;
+        self.page
+            .evaluate(expr)
+            .await
+            .ok()
+            .and_then(|r| r.value().and_then(|v| v.as_bool()))
+            .unwrap_or(false)
     }
 
     /// Press a key chord.
