@@ -306,6 +306,46 @@ impl Page {
             .map_err(crate::cdp::CdpError::into_browser_error_ignore_method)?;
         Ok(())
     }
+
+    /// Inject the neon-arrow virtual cursor overlay into every new document.
+    ///
+    /// [Decision Log]
+    /// - 목적과 의도: Make the agent's CDP mouse visually observable on
+    ///   headless/Xvfb displays (where Input.dispatchMouseEvent renders no
+    ///   OS cursor) for the live viewer and demos.
+    /// - 기존 구현 및 제약 조건: Previously the cursor overlay was inlined
+    ///   per-fixture, so it only existed on demo pages.
+    /// - 검토한 주요 대안: Runtime.evaluate after each Input.* call to move a
+    ///   div — couples the visual layer to the input engine and adds latency.
+    /// - 선택한 방식: addScriptToEvaluateOnNewDocument so the overlay is
+    ///   injected before page JS and survives navigation. The overlay listens
+    ///   to the same pointer events CDP already dispatches, so it needs zero
+    ///   input-engine cooperation.
+    /// - 장점: Universal (works on any page), survives navigation, no input
+    ///   coupling. 단점: Relies on CDP dispatching DOM pointer events.
+    pub async fn inject_cursor_overlay(&self) -> Result<(), BrowserError> {
+        let source = include_str!("../../tests/fixtures/cursor-overlay.js");
+        // Register for all future navigations so the overlay survives reloads
+        // and SPA route changes (the script is idempotent via the
+        // __hu_cursor_injected guard).
+        self.call::<Value>(
+            "Page.addScriptToEvaluateOnNewDocument",
+            Some(json!({ "source": source })),
+            Duration::from_secs(10),
+        )
+        .await?;
+        // Also run it on the current document so the cursor appears
+        // immediately. We base64-encode the source to avoid quoting issues,
+        // then decode and execute via an inline <script> element so the code
+        // runs in the page's global scope (not an evaluate closure, which can
+        // confuse strict CSPs less than eval).
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, source);
+        let expr = format!(
+            "(function(){{try{{var s=document.createElement('script');s.textContent=atob('{b64}');document.documentElement.appendChild(s);}}catch(e){{}}}})();"
+        );
+        let _ = self.evaluate(&expr).await;
+        Ok(())
+    }
 }
 
 /// Helper trait to convert CdpError into BrowserError without a method name.

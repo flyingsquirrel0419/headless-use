@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use crate::browser::{discover_browser, Browser, LaunchOptions};
-use crate::cli::{output, LaunchArgs, RunArgs};
+use crate::cli::{output, LaunchArgs, RunArgs, ViewArgs};
 use crate::observe::parse_ref;
 use crate::session::Session;
 
@@ -202,6 +202,86 @@ pub async fn replay(args: crate::cli::ReplayArgs) -> i32 {
         Err(e) => return output::print_error(&e),
     };
     session.shutdown().await;
+    code
+}
+
+/// Run the `view` command: a session with a live localhost MJPEG viewer.
+///
+/// Starts the browser session, injects the neon-arrow cursor overlay, starts
+/// the screencast + HTTP viewer on 127.0.0.1, prints the viewer URL, then
+/// runs the same stdio JSON-RPC loop as `serve` so the agent can still issue
+/// observe/click/type/etc. while a human watches the stream in a browser tab.
+pub async fn view(args: ViewArgs) -> i32 {
+    let opts = match args.launch.to_launch_options() {
+        Ok(o) => o.with_no_sandbox_for_root(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    // Warn (not block) when not using xvfb: the stream still works on
+    // headless=new, but a real window isn't rendered. This is informational.
+    if !args.launch.json && opts.compat == crate::browser::launch::CompatMode::Chromium {
+        eprintln!("note: using --compat chromium (headless=new). The viewer stream works, but for a real rendered window use --compat xvfb.");
+    }
+    let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
+    let session = match Session::start(opts).await {
+        Ok(s) => s.with_policy_async(policy).await,
+        Err(e) => return output::print_error(&e),
+    };
+    // Inject the cursor overlay so the agent's mouse is visible.
+    if let Err(e) = session.page().inject_cursor_overlay().await {
+        // Non-fatal: the viewer still streams; the cursor just won't show.
+        eprintln!("warning: cursor overlay injection failed: {e}");
+    }
+    // Start the screencast + HTTP viewer. Use the parsed viewport for the
+    // screencast max dimensions so the stream matches the page size.
+    let vp = crate::cdp::Viewport::parse(&args.launch.viewport)
+        .map(|v| (v.width, v.height))
+        .unwrap_or((1280, 720));
+    let max_w = vp.0;
+    let max_h = vp.1;
+    let screencast = match crate::viewer::Screencast::start(
+        session.page(),
+        args.quality.clamp(1, 100),
+        max_w,
+        max_h,
+    )
+    .await
+    {
+        Ok(s) => std::sync::Arc::new(s),
+        Err(e) => {
+            eprintln!("error: failed to start screencast: {e}");
+            return 1;
+        }
+    };
+    let viewer_opts = crate::viewer::ViewerOptions {
+        port: args.viewer_port,
+        ..Default::default()
+    };
+    let handle = match crate::viewer::http::serve(screencast.clone(), viewer_opts).await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("error: failed to start viewer: {e}");
+            return 1;
+        }
+    };
+    if args.launch.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "viewer": { "url": handle.url(), "stream": handle.stream_url(), "port": handle.addr.port() }
+            })
+        );
+    } else {
+        println!("Live viewer: {}", handle.url());
+        println!("Stream:      {}", handle.stream_url());
+        println!("JSON-RPC on stdio (same as `serve`). Ctrl-C to exit.");
+    }
+    // Run the stdio JSON-RPC loop (identical to `serve`).
+    let code = crate::cli::rpc::run_stdio(session).await;
+    // Stop the screencast on exit (best-effort).
+    let _ = screencast.stop().await;
     code
 }
 

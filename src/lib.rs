@@ -24,6 +24,7 @@ pub mod security;
 pub mod session;
 pub mod trace;
 pub mod util;
+pub mod viewer;
 
 pub use browser::{Browser, BrowserError, LaunchOptions};
 

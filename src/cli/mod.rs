@@ -39,6 +39,8 @@ pub enum Command {
     Mcp(ServeArgs),
     /// Replay a recorded trace from a run directory.
     Replay(ReplayArgs),
+    /// Start a session with a live localhost viewer (MJPG stream + cursor overlay).
+    View(ViewArgs),
 }
 
 /// Arguments shared by launch/serve/open.
@@ -155,6 +157,29 @@ pub struct ReplayArgs {
     /// Browser launch options.
     #[command(flatten)]
     pub launch: LaunchArgs,
+}
+
+/// View args: launch a session with a live localhost MJPEG viewer.
+#[derive(Parser, Debug, Clone)]
+pub struct ViewArgs {
+    /// Browser launch options.
+    #[command(flatten)]
+    pub launch: LaunchArgs,
+    /// Viewer HTTP port (binds to 127.0.0.1 only).
+    #[arg(long, default_value_t = 7780)]
+    pub viewer_port: u16,
+    /// JPEG quality (1..100) for the screencast stream.
+    #[arg(long, default_value_t = 80)]
+    pub quality: u32,
+    /// Target framerate cap (everyNthFrame is always 1; this scales max dims).
+    #[arg(long, default_value_t = 30)]
+    pub fps: u32,
+    /// Restrict navigation to these hosts (repeatable). Others are blocked.
+    #[arg(long = "allow-host", value_name = "HOST")]
+    pub allow_hosts: Vec<String>,
+    /// Always block navigation to these hosts (repeatable, takes precedence).
+    #[arg(long = "deny-host", value_name = "HOST")]
+    pub deny_hosts: Vec<String>,
 }
 
 /// Build a navigation policy from allow/deny host lists.

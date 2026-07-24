@@ -393,7 +393,12 @@ async fn start_xvfb() -> Result<String, BrowserError> {
         .map_err(|e| BrowserError::LaunchFailed(format!("Xvfb spawn: {e}")))?;
     // Give Xvfb a moment to start.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    Ok(format!("localhost{display}"))
+    // Return the bare `:N` form. `localhost:N` makes the X client use an
+    // abstract/TCP transport path that some Chrome builds reject on headless
+    // servers, causing "browser exited early". The bare display number (e.g.
+    // `:99`) uses the standard X11 unix socket and matches a manual
+    // `DISPLAY=:99 google-chrome` invocation.
+    Ok(display)
 }
 
 /// Short random id for temp dir names (no uuid dep at call site).
