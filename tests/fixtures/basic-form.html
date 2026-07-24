@@ -1,0 +1,22 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>Login</title>
+<style>body{font-family:sans-serif;padding:24px}.f{margin:8px 0}label{display:block;margin-bottom:4px}input{padding:6px;font-size:14px}</style></head>
+<body>
+<h1>Login</h1>
+<form id="login-form">
+  <div class="f"><label for="email">이메일</label><input id="email" type="email" placeholder="user@example.com"></div>
+  <div class="f"><label for="pass">비밀번호</label><input id="pass" type="password" placeholder="비밀번호"></div>
+  <div class="f"><label><input id="remember" type="checkbox"> 로그인 상태 유지</label></div>
+  <button type="submit" id="submit">로그인</button>
+</form>
+<a href="#" id="signup">회원가입</a>
+<div id="result"></div>
+<script>
+document.getElementById('login-form').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  const email=document.getElementById('email').value;
+  const pass=document.getElementById('pass').value;
+  document.getElementById('result').textContent='logged in as '+email;
+  document.title='Dashboard';
+});
+</script>
+</body></html>

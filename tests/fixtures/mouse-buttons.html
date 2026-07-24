@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mouse</title>
+<style>body{font-family:monospace;padding:20px}#log{white-space:pre-wrap;border:1px solid #ccc;padding:10px;height:300px;overflow:auto}</style></head>
+<body><h2>Mouse buttons</h2><div id="target" style="width:300px;height:200px;background:#eef;border:2px solid #39c">Click here</div>
+<div id="log"></div>
+<script>
+const log=document.getElementById('log');
+const t=document.getElementById('target');
+const names={0:'left',1:'left',2:'right',4:'middle',8:'back',16:'forward'};
+function rec(e){log.textContent+=e.type+' button='+names[e.button]+' buttons='+e.buttons+' x='+Math.round(e.offsetX)+' y='+Math.round(e.offsetY)+' count='+e.detail+'\n';log.scrollTop=log.scrollHeight;}
+for(const ev of ['mousedown','mouseup','click','dblclick','contextmenu'])t.addEventListener(ev,rec);
+t.addEventListener('contextmenu',e=>e.preventDefault());
+</script></body></html>

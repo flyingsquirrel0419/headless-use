@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Dynamic DOM</title></head>
+<body><h2>Dynamic DOM</h2>
+<button id="add">Add item</button>
+<div id="list"></div>
+<script>
+let n=0;
+document.getElementById('add').onclick=()=>{
+  n++;const b=document.createElement('button');b.textContent='Item '+n;b.id='item-'+n;
+  document.getElementById('list').appendChild(b);
+};
+</script></body></html>

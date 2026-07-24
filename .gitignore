@@ -1,0 +1,11 @@
+/target
+/.headless-use/
+/output/
+*.png
+*.jpg
+!tests/fixtures/**/*.png
+!docs/**/*.png
+**/*.rs.bk
+.DS_Store
+*.swp
+*~

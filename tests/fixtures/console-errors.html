@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Console errors</title></head>
+<body><h2>Console errors</h2>
+<button id="b1">error</button><button id="b2">warn</button><button id="b3">throw</button>
+<script>
+document.getElementById('b1').onclick=()=>console.error('test error from button');
+document.getElementById('b2').onclick=()=>console.warn('test warning');
+document.getElementById('b3').onclick=()=>{throw new Error('uncaught exception');};
+nonexistent.function.call();
+</script></body></html>

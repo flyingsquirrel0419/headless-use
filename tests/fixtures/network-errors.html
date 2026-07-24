@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Network</title></head>
+<body><h2>Network</h2>
+<button id="b1">fetch ok</button><button id="b2">fetch 500</button><button id="b3">fetch fail</button>
+<div id="log">idle</div>
+<script>
+document.getElementById('b1').onclick=async()=>{try{const r=await fetch('/api/ok');document.getElementById('log').textContent='ok '+r.status;}catch(e){document.getElementById('log').textContent='err';}};
+document.getElementById('b2').onclick=async()=>{try{const r=await fetch('/api/bad');document.getElementById('log').textContent='bad '+r.status;}catch(e){document.getElementById('log').textContent='err';}};
+document.getElementById('b3').onclick=async()=>{try{await fetch('http://127.0.0.1:1/nope');}catch(e){document.getElementById('log').textContent='failed';}};
+</script></body></html>

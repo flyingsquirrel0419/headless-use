@@ -1,0 +1,29 @@
+name: Release
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  build:
+    name: Build release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/headless-use dist/
+          cp README.md LICENSE dist/ 2>/dev/null || true
+          tar czf headless-use-${{ github.ref_name }}-x86_64-linux.tar.gz -C dist .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-use-${{ github.ref_name }}-x86_64-linux
+          path: headless-use-*.tar.gz
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: headless-use-*.tar.gz

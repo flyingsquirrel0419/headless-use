@@ -1,0 +1,10 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>File drop</title>
+<style>#zone{width:400px;height:200px;border:3px dashed #39c;display:flex;align-items:center;justify-content:center}</style></head>
+<body><h2>File drop zone</h2>
+<div id="zone">Drop files here</div>
+<div id="log">none</div>
+<script>
+const z=document.getElementById('zone');
+z.addEventListener('dragover',e=>{e.preventDefault();});
+z.addEventListener('drop',e=>{e.preventDefault();const files=e.dataTransfer.files;document.getElementById('log').textContent='files='+files.length+' name='+(files[0]?files[0].name:'none');});
+</script></body></html>

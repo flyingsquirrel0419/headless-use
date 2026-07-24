@@ -1,0 +1,6 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Slider</title></head>
+<body><h2>Range slider</h2>
+<input type="range" id="r" min="0" max="100" value="20" style="width:400px">
+<div id="log">value=20</div>
+<script>const r=document.getElementById('r');r.addEventListener('input',()=>{document.getElementById('log').textContent='value='+r.value;});</script>
+</body></html>

@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Scroll</title>
+<style>body{font-family:sans-serif}#box{height:300px;overflow:auto;border:2px solid #39c;width:80%}#inner{height:2000px;background:linear-gradient(#cfc,#fcc)}</style></head>
+<body><h2>Inner scroll container</h2>
+<div id="box"><div id="inner"><p style="padding:10px">Scroll me. Each line logs.</p></div></div>
+<div id="log"></div>
+<script>
+const box=document.getElementById('box');
+box.addEventListener('scroll',()=>{document.getElementById('log').textContent='scrollTop='+Math.round(box.scrollTop);});
+</script></body></html>

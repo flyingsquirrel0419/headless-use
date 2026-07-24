@@ -1,0 +1,16 @@
+# Example: run headless-use against a local service.
+version: "3.9"
+services:
+  headless-use:
+    build: ..
+    # --no-sandbox is required inside this container because Chromium runs as
+    # non-root but the default seccomp profile can interfere. For trusted CI
+    # images, prefer keeping the sandbox on and adjusting seccomp instead.
+    command: ["serve", "--no-sandbox"]
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - seccomp:unconfined
+    shm_size: "1gb"

@@ -1,0 +1,56 @@
+[package]
+name = "headless-use"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["headless-use contributors"]
+license = "Apache-2.0"
+description = "Computer use for web development agents, built for headless Linux and CI"
+repository = "https://github.com/headless-use/headless-use"
+keywords = ["browser-automation", "cdp", "computer-use", "headless", "mcp"]
+categories = ["command-line-utilities", "development-tools::testing"]
+build = "build.rs"
+
+[lib]
+name = "headless_use"
+path = "src/lib.rs"
+
+[[bin]]
+name = "headless-use"
+path = "src/main.rs"
+
+[features]
+default = []
+mcp = []
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "1"
+anyhow = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+fastrand = "2"
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = 1

@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Keyboard</title>
+<style>#log{white-space:pre-wrap;border:1px solid #ccc;padding:10px;height:200px;overflow:auto;font-family:monospace}</style></head>
+<body><h2>Keyboard events</h2><input id="i" style="width:300px;font-size:14px;padding:4px" placeholder="type here">
+<div id="log"></div>
+<script>
+const i=document.getElementById('i');const log=document.getElementById('log');
+i.addEventListener('keydown',e=>{log.textContent+=`keydown key=${e.key} code=${e.code} ctrl=${e.ctrlKey} shift=${e.shiftKey} alt=${e.altKey} meta=${e.metaKey} repeat=${e.repeat}\n`;log.scrollTop=log.scrollHeight;});
+i.addEventListener('input',e=>{log.textContent+=`input data="${e.data}" value="${i.value}"\n`;log.scrollTop=log.scrollHeight;});
+</script></body></html>

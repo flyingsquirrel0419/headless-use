@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Overlay</title>
+<style>#overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:flex;align-items:center;justify-content:center}</style></head>
+<body><h2>Overlay blocking</h2>
+<button id="underneath" style="margin-top:300px">Click me</button>
+<div id="overlay"><div style="background:#fff;padding:20px"><p>Dialog</p><button id="close">Close</button></div></div>
+<div id="log">not clicked</div>
+<script>document.getElementById('underneath').onclick=()=>{document.getElementById('log').textContent='clicked';};
+document.getElementById('close').onclick=()=>{document.getElementById('overlay').style.display='none';};</script>
+</body></html>

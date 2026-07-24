@@ -1,0 +1,6 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>IME</title></head>
+<body><h2>CJK/emoji input</h2>
+<input id="i" style="width:400px;font-size:16px;padding:4px" placeholder="한글/中文/絵文字">
+<div id="log">empty</div>
+<script>const i=document.getElementById('i');i.addEventListener('input',e=>{document.getElementById('log').textContent='len='+i.value.length+' val='+i.value;});</script>
+</body></html>

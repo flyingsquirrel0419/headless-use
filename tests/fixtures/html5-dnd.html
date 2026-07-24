@@ -1,0 +1,14 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>HTML5 DnD</title>
+<style>.col{width:150px;height:250px;border:2px dashed #39c;display:inline-block;vertical-align:top;padding:8px}.card{background:#cef;padding:8px;margin:4px;cursor:move;border:1px solid #39c}</style></head>
+<body><h2>HTML5 drag and drop</h2>
+<div class="col" id="todo"><div class="card" id="c1" draggable="true">Card 1</div><div class="card" id="c2" draggable="true">Card 2</div></div>
+<div class="col" id="done"></div>
+<div id="log">dropped=</div>
+<script>
+let dragId=null;
+document.querySelectorAll('.card').forEach(c=>{c.addEventListener('dragstart',e=>{dragId=c.id;e.dataTransfer.setData('text',c.id);});});
+document.querySelectorAll('.col').forEach(col=>{
+  col.addEventListener('dragover',e=>e.preventDefault());
+  col.addEventListener('drop',e=>{e.preventDefault();const id=e.dataTransfer.getData('text');const el=document.getElementById(id);if(el){col.appendChild(el);document.getElementById('log').textContent='dropped='+id+' to '+(col.id);}});
+});
+</script></body></html>

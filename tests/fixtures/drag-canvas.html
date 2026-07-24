@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Canvas drag</title></head>
+<body><h2>Draw by dragging</h2>
+<canvas id="c" width="500" height="300" style="border:2px solid #39c"></canvas>
+<div id="log">points=0</div>
+<script>
+const c=document.getElementById('c');const ctx=c.getContext('2d');ctx.fillStyle='#39c';
+let drawing=false,count=0;
+const pts=[];
+c.addEventListener('pointerdown',e=>{drawing=true;pts.push([e.offsetX,e.offsetY]);ctx.fillRect(e.offsetX,e.offsetY,3,3);});
+c.addEventListener('pointermove',e=>{if(drawing){pts.push([e.offsetX,e.offsetY]);ctx.fillRect(e.offsetX,e.offsetY,3,3);count++;document.getElementById('log').textContent='points='+count;}});
+c.addEventListener('pointerup',()=>{drawing=false;document.getElementById('log').textContent='points='+count+' done';});
+</script></body></html>
