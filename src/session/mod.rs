@@ -33,6 +33,15 @@ pub struct Session {
     page: Arc<Page>,
     trace: Option<Arc<tokio::sync::Mutex<Trace>>>,
     last_observation: tokio::sync::Mutex<Option<Observation>>,
+    /// Persistent cursor position shared across all Mouse instances.
+    /// Without this, each mouse() call creates a fresh Mouse with pos=(0,0),
+    /// breaking move→down→move→up sequences.
+    cursor_pos: std::sync::Arc<tokio::sync::Mutex<crate::input::Point>>,
+    /// Persistent button state shared across all Mouse instances.
+    cursor_buttons: std::sync::Arc<tokio::sync::Mutex<u8>>,
+    /// Navigation counter, incremented on every page navigation.
+    /// Used to detect stale references after the page changes.
+    nav_generation: std::sync::atomic::AtomicU32,
 }
 
 impl Session {
@@ -45,6 +54,11 @@ impl Session {
             page,
             trace: None,
             last_observation: tokio::sync::Mutex::new(None),
+            cursor_pos: std::sync::Arc::new(tokio::sync::Mutex::new(crate::input::Point::new(
+                0.0, 0.0,
+            ))),
+            cursor_buttons: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
+            nav_generation: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -52,6 +66,11 @@ impl Session {
     pub fn with_trace(mut self, trace: Trace) -> Self {
         self.trace = Some(Arc::new(tokio::sync::Mutex::new(trace)));
         self
+    }
+
+    /// Current cursor position (shared state, persistent across mouse() calls).
+    pub async fn cursor_position(&self) -> crate::input::Point {
+        *self.cursor_pos.lock().await
     }
 
     /// The active page.
@@ -68,6 +87,8 @@ impl Session {
     pub async fn open(&self, url: &str) -> Result<(), BrowserError> {
         self.record_action("open", json!({ "url": url })).await;
         self.page.goto(url).await?;
+        self.nav_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -83,9 +104,13 @@ impl Session {
         self.page.goto(&url).await
     }
 
-    /// Build a mouse engine.
+    /// Build a mouse engine sharing the session's persistent cursor state.
     pub fn mouse(&self) -> Mouse<'_> {
-        Mouse::new(&self.page)
+        Mouse::new_with_state(
+            &self.page,
+            self.cursor_pos.clone(),
+            self.cursor_buttons.clone(),
+        )
     }
 
     /// Build a keyboard engine.
@@ -95,7 +120,12 @@ impl Session {
 
     /// Observe the current page and cache the result.
     pub async fn observe(&self) -> Result<Observation, BrowserError> {
-        let obs = ObserveBuilder::new(&self.page).build().await?;
+        let mut obs = ObserveBuilder::new(&self.page).build().await?;
+        // Stamp the observation with the current navigation generation so
+        // resolve_ref can detect stale references after navigation.
+        obs.nav_generation = self
+            .nav_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
         *self.last_observation.lock().await = Some(obs.clone());
         Ok(obs)
     }
@@ -114,6 +144,17 @@ impl Session {
         let obs = self.last_observation().await.ok_or_else(|| {
             BrowserError::ElementNotFound("no observation; run `observe` first".to_string())
         })?;
+        // Stale reference detection: if navigation occurred since the observation
+        // was taken, the reference belongs to an old page and must not be used.
+        let current_nav = self
+            .nav_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_nav != obs.nav_generation {
+            return Err(BrowserError::StaleReference(format!(
+                "@e{ref_id} belongs to page generation {}, but the current page is generation {}. Run `observe` again.",
+                obs.nav_generation, current_nav
+            )));
+        }
         let el = obs
             .get(ref_id)
             .ok_or_else(|| BrowserError::ElementNotFound(format!("@e{ref_id}")))?;

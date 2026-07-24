@@ -25,7 +25,7 @@ pub struct WaitOptions {
 impl Default for WaitOptions {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(10_000),
+            timeout: Duration::from_secs(10),
             network_idle: Duration::from_millis(500),
             dom_quiet: Duration::from_millis(300),
         }

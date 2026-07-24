@@ -93,6 +93,10 @@ pub struct Observation {
     pub elements: Vec<ElementRef>,
     /// The generation id of this observation.
     pub generation: u32,
+    /// Navigation generation when this observation was taken.
+    /// Used by `resolve_ref` to detect stale references after page navigation.
+    #[serde(skip)]
+    pub nav_generation: u32,
 }
 
 impl Observation {

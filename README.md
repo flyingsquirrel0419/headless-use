@@ -30,7 +30,7 @@ on every step. `headless-use` is agent-centric:
 | DOM only                              | Screenshot + AX/DOM + Console + Network   |
 | Node.js dependency common             | Single Rust binary                        |
 | Local desktop focused                 | Headless Linux, Docker, CI first          |
-| Result only                           | Session trace, replay, diagnostic report |
+| Result only                           | Session trace, diagnostic report |
 
 ## 30-second Quick Start
 
@@ -119,7 +119,7 @@ docker run --rm --network host headless-use \
 - **Observe**: accessibility/DOM extraction, semantic `@eN` references, bounding boxes, stale-reference detection
 - **Diagnostics**: console + uncaught errors, network (fetch/XHR) with secret masking, wait-until-stable
 - **Screenshots**: viewport, full-page, element
-- **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + replay
+- **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
 - **Trace**: `actions.jsonl`, screenshots, `report.html` (self-contained), secret redaction
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
 
@@ -233,8 +233,8 @@ wrapper.
 ## Security
 
 See [docs/security.md](docs/security.md). Key points: CDP binds to `127.0.0.1`
-only, secrets are masked in traces, file paths are validated, and host
-allow/deny lists are supported.
+only, secrets are masked in traces, file paths are validated, and a host allow/deny policy layer is available
+(see `src/security/`).
 
 ## Community
 

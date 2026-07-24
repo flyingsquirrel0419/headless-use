@@ -80,6 +80,7 @@ impl<'a> ObserveBuilder<'a> {
             },
             elements: registry.into_sorted(),
             generation,
+            nav_generation: 0,
         })
     }
 

@@ -77,7 +77,9 @@
     if (role === 'checkbox' || role === 'radio' || role === 'switch' || role === 'menuitemcheckbox' || role === 'menuitemradio') {
       checked = el.checked === true || el.getAttribute('aria-checked') === 'true';
     }
-    const value = (el.value != null && el.value !== '') ? String(el.value).slice(0,80) : null;
+    // Never expose password/secret input values — they would leak to the model/MCP/stdout.
+    const isSensitive = (el.type === 'password') || (el.getAttribute('autocomplete') || '').includes('password');
+    const value = (!isSensitive && el.value != null && el.value !== '') ? String(el.value).slice(0,80) : null;
     // backend node id via experimental is unreliable here; use a synthetic key
     // combining tag path + name so references are reasonably stable.
     const backendId = el.dataset.headlessUseRef

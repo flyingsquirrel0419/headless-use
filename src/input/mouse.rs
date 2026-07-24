@@ -77,13 +77,25 @@ pub struct Mouse<'a> {
 }
 
 impl<'a> Mouse<'a> {
-    /// Create a mouse engine for `page`.
+    /// Create a mouse engine for `page` with fresh cursor state.
     pub fn new(page: &'a Page) -> Self {
         Self {
             page,
             pos: std::sync::Arc::new(tokio::sync::Mutex::new(Point::new(0.0, 0.0))),
             buttons: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
         }
+    }
+
+    /// Create a mouse engine sharing existing cursor/button state (for Session).
+    /// This is the critical fix: without shared state, a sequence like
+    /// `move_to(300,200)` then `down()` then `up()` would create three
+    /// independent Mouse instances, each thinking the cursor is at (0,0).
+    pub fn new_with_state(
+        page: &'a Page,
+        pos: std::sync::Arc<tokio::sync::Mutex<Point>>,
+        buttons: std::sync::Arc<tokio::sync::Mutex<u8>>,
+    ) -> Self {
+        Self { page, pos, buttons }
     }
 
     /// Current cursor position.
@@ -285,20 +297,17 @@ impl<'a> Mouse<'a> {
             let t = i as f64 / steps as f64;
             let x = from.x + (to.x - from.x) * t;
             let y = from.y + (to.y - from.y) * t;
-            self.dispatch(
-                "mouseMoved",
-                Point { x, y },
-                button,
-                button.bitmask(),
-                mods,
-                None,
-                None,
-            )
-            .await?;
+            let p = Point { x, y };
+            self.dispatch("mouseMoved", p, button, button.bitmask(), mods, None, None)
+                .await?;
+            // Update tracked cursor position so up() releases at the correct spot.
+            *self.pos.lock().await = p;
             if !step_dur.is_zero() {
                 tokio::time::sleep(step_dur).await;
             }
         }
+        // Ensure cursor position is exactly at destination before release.
+        *self.pos.lock().await = to;
         self.up(button, mods).await?;
         Ok(())
     }
@@ -332,21 +341,16 @@ impl<'a> Mouse<'a> {
                 let t = i as f64 / steps as f64;
                 let x = from.x + (to.x - from.x) * t;
                 let y = from.y + (to.y - from.y) * t;
-                self.dispatch(
-                    "mouseMoved",
-                    Point { x, y },
-                    button,
-                    button.bitmask(),
-                    mods,
-                    None,
-                    None,
-                )
-                .await?;
+                let p = Point { x, y };
+                self.dispatch("mouseMoved", p, button, button.bitmask(), mods, None, None)
+                    .await?;
+                *self.pos.lock().await = p;
                 if !inner.is_zero() {
                     tokio::time::sleep(inner).await;
                 }
             }
         }
+        *self.pos.lock().await = path[path.len() - 1];
         self.up(button, mods).await?;
         Ok(())
     }

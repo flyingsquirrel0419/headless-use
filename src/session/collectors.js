@@ -33,7 +33,10 @@
     pushConsole('error', ['Unhandled promise rejection: ' + (r && r.stack ? r.stack : String(r))]);
   });
 
-  // Network: wrap fetch + XHR.
+  // Network: wrap fetch + XHR with in-flight tracking.
+  // __hu_net_inflight__ counts requests that started but haven't finished.
+  // wait-until-stable reads this to detect ongoing network activity.
+  window.__hu_net_inflight__ = 0;
   var origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function () {
@@ -41,10 +44,13 @@
       var url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url) || '';
       var method = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET';
       var start = performance.now();
+      window.__hu_net_inflight__++;
       return origFetch.apply(this, args).then(function (resp) {
+        window.__hu_net_inflight__--;
         window.__hu_network__.push({ method: method, url: url, status: resp.status, durationMs: Math.round(performance.now() - start) });
         return resp;
       }, function (err) {
+        window.__hu_net_inflight__--;
         window.__hu_network__.push({ method: method, url: url, failed: String(err) });
         throw err;
       });
@@ -60,10 +66,13 @@
   XMLHttpRequest.prototype.send = function () {
     var self = this;
     var start = performance.now();
+    window.__hu_net_inflight__++;
     this.addEventListener('loadend', function () {
+      window.__hu_net_inflight__--;
       window.__hu_network__.push({ method: self.__hu_method, url: self.__hu_url, status: self.status, durationMs: Math.round(performance.now() - start) });
     });
     this.addEventListener('error', function () {
+      window.__hu_net_inflight__--;
       window.__hu_network__.push({ method: self.__hu_method, url: self.__hu_url, failed: 'network error' });
     });
     return origXhrSend.apply(this, arguments);
