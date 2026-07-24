@@ -30,10 +30,13 @@ File paths are validated against traversal (`..`) before use.
 
 ## Network policy
 
-Optional host allow/deny lists bound navigation:
+Host allow/deny lists are enforced on navigation (`open`/`goto`/`reload`).
+Navigation to a disallowed host returns `NAVIGATION_BLOCKED` **before** any
+request reaches the network. The deny list takes precedence over the allow list.
 
 ```
 headless-use serve --allow-host localhost --allow-host 127.0.0.1
+headless-use serve --deny-host evil.example.com
 ```
 
 ## Trace safety

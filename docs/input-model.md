@@ -33,6 +33,16 @@ Bitmask: `alt=1, ctrl=2, meta=4, shift=8`. Parsed from comma-separated strings
 Intermediate moves are required because sliders, canvases, and sortable lists
 listen for `pointermove` and break on teleport.
 
+## Transactional button state
+
+`down`/`up`/`click` are transactional: the shared button mask is committed
+**only after** a successful CDP dispatch. If dispatch fails, local state stays
+consistent with the browser (the button is not recorded as held). Drag
+intermediate moves report the cumulative held-buttons mask (e.g. `buttons=3`
+when right is held during a left drag), while the `button` field carries the
+dragged button so Chrome pointer-capture stays active for native controls
+(sliders, range inputs).
+
 ## Keyboard events
 
 | CDP type | When                                |

@@ -120,7 +120,7 @@ docker run --rm --network host headless-use \
 - **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
 - **Screenshots**: viewport, full-page, element-region (`--element @eN`)
 - **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
-- **Trace**: `actions.jsonl`, `report.html` (self-contained), forced secret redaction at the writer boundary
+- **Trace + Replay**: `actions.jsonl`, `report.html` (self-contained, screenshots embedded), forced secret redaction at the writer boundary, and `replay` to re-execute a recorded trace
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
 
 ## MCP server
@@ -226,7 +226,6 @@ wrapper.
 ## Roadmap
 
 - `report.html` interactive timeline
-- `replay` CLI with deterministic action re-execution
 - HTML5 file drop with MIME handling
 - `install-browser` with checksum verification
 

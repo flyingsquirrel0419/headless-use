@@ -1,11 +1,11 @@
-//! Action trace recording + report generation (replay is on the roadmap).
+//! Action trace recording + report generation + replay.
 //!
 //! ## Why
 //! When an agent's browser session misbehaves, the most useful artifact is a
 //! faithful record of what it did and what the page did in response. We record
 //! every action as a JSONL line, and generates a self-contained `report.html`.
-//! (Replay of the action sequence is on the roadmap.) The `report.html` is a
-//! self-contained static file (no external
+//! The `replay` submodule re-executes a recorded action sequence. The
+//! `report.html` is a self-contained static file (no external
 //! deps) for sharing.
 
 use std::path::{Path, PathBuf};
@@ -14,6 +14,8 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
+
+pub mod replay;
 
 use crate::util;
 

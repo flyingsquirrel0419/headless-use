@@ -15,6 +15,7 @@ async fn main() {
         Command::Run(args) => headless_use::cli::commands::run(args).await,
         Command::InstallBrowser => headless_use::cli::commands::install_browser().await,
         Command::Mcp(args) => headless_use::cli::commands::mcp(args).await,
+        Command::Replay(args) => headless_use::cli::commands::replay(args).await,
     };
     std::process::exit(code)
 }

@@ -272,6 +272,30 @@ pub async fn dispatch(
         }
         "url" => Ok(json!({ "url": session.page().url().await? })),
         "title" => Ok(json!({ "title": session.page().title().await? })),
+        "trace.start" => {
+            let base = params
+                .get("base")
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let dir = session.trace_start(&base).await?;
+            Ok(json!({ "traceDir": dir, "started": true }))
+        }
+        "trace.stop" => {
+            let dir = session.trace_stop().await?;
+            Ok(json!({ "traceDir": dir, "stopped": true }))
+        }
+        "replay" => {
+            let run_dir = params
+                .get("runDir")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::browser::BrowserError::InvalidInput("missing 'runDir'".into())
+                })?;
+            let result =
+                crate::trace::replay::replay(session, std::path::Path::new(run_dir)).await?;
+            Ok(json!(result))
+        }
         "browser.close" => {
             session.browser().shutdown().await;
             Ok(json!({ "closed": true }))

@@ -34,3 +34,40 @@ printf '%s\n' \
 `serve` records a trace when the session is created with tracing (programmatic
 API). Artifacts land in `.headless-use/runs/<timestamp>-<id>/`:
 `actions.jsonl`, `metadata.json`, `report.html`, `screenshots/`.
+
+
+## Element-region screenshot
+
+Capture only a specific element's bounding box by reference:
+
+```bash
+# JSON-RPC:
+{"id":1,"method":"screenshot","params":{"element":"@g1:e3"},"jsonrpc":"2.0"}
+
+# One-shot CLI:
+headless-use run --url http://localhost:3000 --element "@g1:e3" --screenshot btn.png
+```
+
+## Record + replay
+
+Record a session, then replay it against a fresh browser:
+
+```bash
+# 1. Record (trace.start/stop via JSON-RPC):
+printf '%s\n' \
+  '{"id":1,"method":"trace.start","params":{},"jsonrpc":"2.0"}' \
+  '{"id":2,"method":"browser.open","params":{"url":"http://localhost:3000"},"jsonrpc":"2.0"}' \
+  '{"id":3,"method":"observe","params":{},"jsonrpc":"2.0"}' \
+  '{"id":4,"method":"click","params":{"ref":"@g1:e1"},"jsonrpc":"2.0"}' \
+  '{"id":5,"method":"type","params":{"text":"hello"},"jsonrpc":"2.0"}' \
+  '{"id":6,"method":"trace.stop","params":{},"jsonrpc":"2.0"}' \
+  | headless-use serve
+
+# 2. Replay:
+headless-use replay .headless-use/runs/<timestamp>-<id>/
+# -> Replay: 4/4 succeeded, 0 failed, 0 skipped (4 total)
+```
+
+Sensitive (redacted) values in the trace are skipped during replay — the
+password is never stored, so it cannot be replayed, but all other actions
+re-execute faithfully.

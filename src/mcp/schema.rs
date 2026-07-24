@@ -214,6 +214,32 @@ fn tools() -> Vec<ToolDef> {
         description: "Close the browser session.",
         schema: json!({ "type": "object", "properties": {} }),
     },
+    ToolDef {
+        name: "trace_start",
+        description: "Start recording a trace. Actions are written to actions.jsonl + report.html under a run directory. Returns the run directory path.",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "base": { "type": "string", "description": "Base directory for the trace run (defaults to cwd)." }
+            }
+        }),
+    },
+    ToolDef {
+        name: "trace_stop",
+        description: "Stop tracing, flush the trace, and write report.html. Returns the run directory path.",
+        schema: json!({ "type": "object", "properties": {} }),
+    },
+    ToolDef {
+        name: "replay",
+        description: "Replay a recorded action sequence from a run directory against the current session. Re-observes as needed. Sensitive (redacted) values are skipped.",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "runDir": { "type": "string", "description": "Path to the run directory containing actions.jsonl." }
+            },
+            "required": ["runDir"]
+        }),
+    },
 ]
 }
 /// Return the full tool list as a JSON array (for `tools/list` result).
@@ -251,6 +277,9 @@ pub fn tool_for_method(tool: &str) -> Option<&'static str> {
         "browser_console" => "console",
         "browser_network" => "network",
         "browser_close" => "browser.close",
+        "trace_start" => "trace.start",
+        "trace_stop" => "trace.stop",
+        "replay" => "replay",
         _ => return None,
     })
 }

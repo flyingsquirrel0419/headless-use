@@ -37,6 +37,8 @@ pub enum Command {
     InstallBrowser,
     /// Start the MCP (Model Context Protocol) server over stdio.
     Mcp(ServeArgs),
+    /// Replay a recorded trace from a run directory.
+    Replay(ReplayArgs),
 }
 
 /// Arguments shared by launch/serve/open.
@@ -143,6 +145,16 @@ fn parse_compat(s: &str) -> Result<crate::browser::launch::CompatMode, String> {
         "xvfb" => Ok(crate::browser::launch::CompatMode::Xvfb),
         other => Err(format!("unknown compat '{other}' (chromium|xvfb)")),
     }
+}
+
+/// Replay args: re-execute a recorded trace.
+#[derive(Parser, Debug, Clone)]
+pub struct ReplayArgs {
+    /// The run directory containing actions.jsonl (e.g. .headless-use/runs/<ts>-<id>/).
+    pub run_dir: String,
+    /// Browser launch options.
+    #[command(flatten)]
+    pub launch: LaunchArgs,
 }
 
 /// Build a navigation policy from allow/deny host lists.

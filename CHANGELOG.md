@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — replay engine
+- **Replay engine** (`src/trace/replay.rs`): reads a recorded `actions.jsonl`
+  and re-executes each action (`open`, `click`, `type`, `insert-text`,
+  `key.press`, `scroll`, `mouse.drag`, `hover`, `screenshot`, `wait`, `reload`)
+  against a fresh session. Re-observes before ref-resolving actions and after
+  navigation so generation-bound references re-resolve. Sensitive (redacted)
+  values are skipped gracefully. Returns a detailed `ReplayResult` with
+  per-step success/failure and the failure stop point.
+- **`replay` CLI command**: `headless-use replay <run-dir>` re-runs a trace.
+  `--json` for machine-readable output.
+- **`trace.start`/`trace.stop` JSON-RPC + MCP**: start/stop tracing at runtime
+  without rebuilding the session. The trace field is now behind a lock so it
+  can be swapped at runtime.
+- **MCP tools**: `trace_start`, `trace_stop`, `replay` added to the MCP schema.
+- **4 replay integration tests** verify record→replay fidelity, redacted-value
+  skipping, and runtime trace start/stop.
+
 ### Added — P1 features (document-feature consistency)
 - **Host allow/deny policy enforced on navigation**: `open`/`goto`/`reload` now
   consult the `Policy` and return `NAVIGATION_BLOCKED` before any request reaches

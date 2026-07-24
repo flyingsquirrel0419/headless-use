@@ -33,7 +33,9 @@ use crate::trace::Trace;
 pub struct Session {
     browser: Arc<Browser>,
     page: Arc<Page>,
-    trace: Option<Arc<tokio::sync::Mutex<Trace>>>,
+    /// Trace recorder, behind a lock so it can be started/stopped at runtime
+    /// via `trace.start`/`trace.stop` JSON-RPC without rebuilding the Session.
+    trace: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Mutex<Trace>>>>>,
     last_observation: tokio::sync::Mutex<Option<Observation>>,
     /// Persistent cursor position shared across all Mouse instances.
     /// Without this, each mouse() call creates a fresh Mouse with pos=(0,0),
@@ -67,7 +69,7 @@ impl Session {
         let session = Self {
             browser: Arc::new(browser),
             page,
-            trace: None,
+            trace: Arc::new(std::sync::Mutex::new(None)),
             last_observation: tokio::sync::Mutex::new(None),
             cursor_pos: std::sync::Arc::new(tokio::sync::Mutex::new(crate::input::Point::new(
                 0.0, 0.0,
@@ -121,9 +123,51 @@ impl Session {
     }
 
     /// Attach tracing.
-    pub fn with_trace(mut self, trace: Trace) -> Self {
-        self.trace = Some(Arc::new(tokio::sync::Mutex::new(trace)));
+    pub fn with_trace(self, trace: Trace) -> Self {
+        // with_trace is a sync builder; tokio::Mutex::blocking_lock requires a
+        // runtime to be available. Callers in async tests have one; CLI paths
+        // use with_trace_async instead.
+        *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
         self
+    }
+
+    /// Async version of [`Self::with_trace`].
+    pub async fn with_trace_async(self, trace: Trace) -> Self {
+        *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
+        self
+    }
+
+    /// Start tracing at runtime, creating a new trace under `base`.
+    /// Returns the run directory path. If tracing is already active, returns
+    /// the existing run directory without creating a new one.
+    pub async fn trace_start(&self, base: &std::path::Path) -> Result<String, BrowserError> {
+        // Clone the existing trace Arc (if any) out of the guard before awaiting
+        // so the std::sync::MutexGuard is not held across an await point.
+        let existing = self.trace.lock().unwrap().as_ref().cloned();
+        if let Some(t) = existing {
+            return Ok(t.lock().await.dir().to_string_lossy().to_string());
+        }
+        let trace = Trace::new(base)
+            .await
+            .map_err(|e| BrowserError::Other(format!("trace start: {e}")))?;
+        let dir = trace.dir().to_string_lossy().to_string();
+        *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
+        Ok(dir)
+    }
+
+    /// Stop tracing, flush the trace, and return the run directory path.
+    pub async fn trace_stop(&self) -> Result<String, BrowserError> {
+        let trace_opt = self.trace.lock().unwrap().take();
+        if let Some(t) = trace_opt {
+            let mut trace = t.lock().await;
+            trace
+                .flush()
+                .await
+                .map_err(|e| BrowserError::Other(format!("trace flush: {e}")))?;
+            Ok(trace.dir().to_string_lossy().to_string())
+        } else {
+            Err(BrowserError::Other("no active trace to stop".into()))
+        }
     }
 
     /// Attach a host allow/deny navigation policy. When set, navigation to a
@@ -507,7 +551,8 @@ impl Session {
         let data = self.page.screenshot(full_page, clip).await?;
         // Save to trace so report.html can embed the image, using the same
         // sequence number as the action so the report can match them.
-        if let Some(t) = self.trace.as_ref() {
+        let trace = self.trace.lock().unwrap().as_ref().cloned();
+        if let Some(t) = trace {
             let _ = t.lock().await.save_screenshot(seq, &data).await;
         }
         Ok(data)
@@ -606,7 +651,8 @@ impl Session {
 
     /// Shut down the session, flushing trace.
     pub async fn shutdown(self) {
-        if let Some(t) = self.trace.as_ref() {
+        let trace_opt = self.trace.lock().unwrap().clone();
+        if let Some(t) = trace_opt {
             let _ = t.lock().await.flush().await;
         }
         self.browser.shutdown().await;
@@ -626,7 +672,10 @@ impl Session {
 
     /// Record an action and return its sequence number (0 if tracing is off).
     async fn record_action(&self, kind: &str, params: serde_json::Value) -> u64 {
-        if let Some(t) = self.trace.as_ref() {
+        // Clone the Arc out of the guard before awaiting so the
+        // std::sync::MutexGuard is not held across an await point.
+        let trace = self.trace.lock().unwrap().as_ref().cloned();
+        if let Some(t) = trace {
             t.lock().await.record(kind, params).await
         } else {
             0

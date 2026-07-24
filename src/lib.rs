@@ -5,7 +5,7 @@
 //!   2. [`input`] — real `Input.*` CDP input events (mouse, keyboard, drag)
 //!   3. [`observe`] — accessibility/DOM observation + semantic references
 //!   4. [`session`] — long-lived sessions, tabs, navigation
-//!   5. [`trace`] — action recording + report (replay is on the roadmap)
+//!   5. [`trace`] — action recording + report + replay
 //!   6. [`protocol`] — JSON-RPC over stdio
 //!   7. [`mcp`] — Model Context Protocol tool definitions
 

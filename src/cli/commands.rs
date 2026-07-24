@@ -159,6 +159,52 @@ pub async fn mcp(args: crate::cli::ServeArgs) -> i32 {
     crate::mcp::transport::run(session).await
 }
 
+/// Run the `replay` command: re-execute a recorded trace against a fresh session.
+pub async fn replay(args: crate::cli::ReplayArgs) -> i32 {
+    let opts = match args.launch.to_launch_options() {
+        Ok(o) => o.with_no_sandbox_for_root(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let run_dir = std::path::PathBuf::from(&args.run_dir);
+    if !run_dir.join("actions.jsonl").exists() {
+        eprintln!("error: no actions.jsonl in {run_dir:?}");
+        return 1;
+    }
+    let session = match Session::start(opts).await {
+        Ok(s) => s,
+        Err(e) => return output::print_error(&e),
+    };
+    let result = crate::trace::replay::replay(&session, &run_dir).await;
+    let code = match result {
+        Ok(r) => {
+            if args.launch.json {
+                output::print_json(&serde_json::to_value(&r).unwrap_or_default());
+            } else {
+                println!(
+                    "Replay: {}/{} succeeded, {} failed, {} skipped ({} total)",
+                    r.succeeded, r.replayed, r.failed, r.skipped, r.total_steps
+                );
+                if !r.all_succeeded {
+                    if let Some(stop) = r.stopped_at {
+                        println!("Stopped at sequence #{stop}");
+                    }
+                }
+            }
+            if r.all_succeeded {
+                0
+            } else {
+                1
+            }
+        }
+        Err(e) => return output::print_error(&e),
+    };
+    session.shutdown().await;
+    code
+}
+
 /// Run the `serve` command (JSON-RPC over stdio).
 pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
     let opts = match args.launch.to_launch_options() {

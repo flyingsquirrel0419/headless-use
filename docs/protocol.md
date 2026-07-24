@@ -36,6 +36,37 @@ Newline-delimited JSON-RPC 2.0 over stdio (one JSON object per line).
 additive. Removed/renamed methods require a major version bump. See
 `docs/architecture.md` for the method list.
 
+## Error codes
+
+Stable machine-readable codes returned in the `error.code` field:
+
+| Code | Meaning |
+| --- | --- |
+| `BROWSER_NOT_FOUND` | No browser executable on PATH or at the configured path. |
+| `LAUNCH_FAILED` | The browser process failed to start. |
+| `CONNECTION_FAILED` | Could not connect to the CDP WebSocket/HTTP endpoint. |
+| `PROTOCOL_ERROR` | A CDP method returned a protocol-level error. |
+| `TIMEOUT` | An operation did not complete within the timeout. |
+| `TARGET_CLOSED` | The page/target closed unexpectedly. |
+| `ELEMENT_NOT_FOUND` | A semantic reference did not resolve to any element. |
+| `ELEMENT_NOT_INTERACTABLE` | An element exists but cannot be interacted with. |
+| `STALE_REFERENCE` | A reference belongs to an older observe/navigation generation. |
+| `INVALID_INPUT` | Invalid input (bad coordinate, unknown button, malformed path). |
+| `NAVIGATION_BLOCKED` | Navigation blocked by the host allow/deny policy. |
+| `IO_ERROR` | An I/O error occurred. |
+| `INTERNAL_ERROR` | An opaque internal error. |
+
+## Trace & replay methods
+
+| Method | Params | Description |
+| --- | --- | --- |
+| `trace.start` | `{base?: string}` | Start recording; returns `{traceDir, started}`. |
+| `trace.stop` | `{}` | Stop, flush, write report.html; returns `{traceDir, stopped}`. |
+| `replay` | `{runDir: string}` | Replay a recorded trace; returns a `ReplayResult`. |
+
+The `screenshot` method also accepts an optional `element` parameter
+(`@g<gen>:e<num>`) to capture only that element's region.
+
 ## Backward compatibility
 
 - New optional params are always additive.
