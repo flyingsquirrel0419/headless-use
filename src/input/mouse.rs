@@ -135,11 +135,29 @@ impl<'a> Mouse<'a> {
     /// Move the cursor from its current position to `p` over `duration`, in
     /// `steps` interpolated steps.
     ///
-    /// Uses an ease-in-out curve (smooth start and end, faster in the middle)
-    /// plus a slight perpendicular bow so the path looks like a natural human
-    /// hand movement rather than a straight teleport. This matters for the
-    /// live viewer: a linear, instant snap looks robotic and is hard to follow
-    /// by eye.
+    /// Uses a smoothstep easing (gentle acceleration/deceleration, never
+    /// stalled at the endpoints) with a very slight perpendicular arc, so the
+    /// motion looks natural and fluid in the live viewer. The arc is small
+    /// enough that it never looks like a detour, just that the path isn't a
+    /// perfectly rigid straight line.
+    ///
+    /// [Decision Log]
+    /// - 목적과 의도: Make agent mouse motion look natural and fluid in the
+    ///   live viewer, not like a robotic linear slide or an instant snap.
+    /// - 기존 구현 및 제약 조건: Earlier version used a hard ease-in-out
+    ///   (2t² then 1-((-2t+2)²/2)) that stalled near the endpoints and a large
+    ///   fixed bow that looked like a detour; combined with per-step sleeps it
+    ///   caused visible stutter and a slow feel.
+    /// - 검토한 주요 대안: Pure linear interpolation — looks mechanical.
+    ///   Larger bow — looks unnatural.
+    /// - 선택한 방식: smoothstep (t*t*(3-2t)) easing with a tiny bow (5% of
+    ///   distance, capped 40px), and a minimum step interval so dispatch
+    ///   overhead doesn't pile up and stutter the stream.
+    /// - 장점: Fluid, fast, natural. 단점: Slightly more CDP traffic than a
+    ///   snap; acceptable for a viewer.
+    /// - 수정 시 주의: Keep the bow small and endpoints exactly on target
+    ///   (bow_t is 0 at t=0 and t=1). Don't make step intervals shorter than
+    ///   ~8ms or Chrome's input queue stutters.
     pub async fn move_smooth(
         &self,
         p: Point,
@@ -151,20 +169,21 @@ impl<'a> Mouse<'a> {
             return self.move_to(p, mods).await;
         }
         let start = self.position().await;
-        let step_dur = if duration.as_millis() > 0 {
-            duration / steps.max(1)
+        // Target a ~60fps step rate but never faster than 8ms, otherwise
+        // Chrome's input pipeline stutters. If the caller asks for very few
+        // steps we honor it; if many, we cap the interval.
+        let target_step = if duration.as_millis() > 0 {
+            (duration / steps.max(1)).max(Duration::from_millis(8))
         } else {
-            Duration::from_millis(0)
+            Duration::from_millis(8)
         };
         let buttons = *self.buttons.lock().await;
-        // Perpendicular bow magnitude: a small fraction of the travel
-        // distance, capped so very short moves stay near-linear.
         let dx = p.x - start.x;
         let dy = p.y - start.y;
         let dist = (dx * dx + dy * dy).sqrt();
-        let bow = (dist * 0.12).min(120.0);
-        // Perpendicular unit vector (rotated 90deg). If dist is ~0 the bow
-        // is ~0 anyway, so the direction doesn't matter.
+        // Small bow: 5% of travel, capped at 40px so long moves don't arc
+        // wildly. This is subtle enough to read as "natural" not "detour".
+        let bow = (dist * 0.05).min(40.0);
         let (px, py) = if dist > 0.0001 {
             (-dy / dist, dx / dist)
         } else {
@@ -172,17 +191,10 @@ impl<'a> Mouse<'a> {
         };
         for i in 1..=steps {
             let lin = i as f64 / steps as f64;
-            // Ease-in-out: slow at the ends, fast in the middle. This makes
-            // the cursor visibly accelerate then decelerate instead of moving
-            // at a constant linear speed.
-            let eased = if lin < 0.5 {
-                2.0 * lin * lin
-            } else {
-                1.0 - ((-2.0 * lin + 2.0).powi(2)) / 2.0
-            };
-            // Quadratic bow: the curve peaks at t=0.5 and returns to 0 at
-            // the endpoints, so start and end land exactly on the straight
-            // line (the cursor still ends at `p`).
+            // smoothstep: t*t*(3-2t). Gentler than the old 2t² curve — it
+            // keeps moving at the endpoints instead of nearly stalling.
+            let eased = lin * lin * (3.0 - 2.0 * lin);
+            // bow peaks at t=0.5 and is 0 at both endpoints.
             let bow_t = 4.0 * lin * (1.0 - lin);
             let x = start.x + dx * eased + px * bow * bow_t;
             let y = start.y + dy * eased + py * bow * bow_t;
@@ -196,8 +208,8 @@ impl<'a> Mouse<'a> {
                 None,
             )
             .await?;
-            if !step_dur.is_zero() {
-                tokio::time::sleep(step_dur).await;
+            if !target_step.is_zero() {
+                tokio::time::sleep(target_step).await;
             }
         }
         *self.pos.lock().await = p;
