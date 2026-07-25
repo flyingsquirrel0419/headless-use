@@ -29,7 +29,11 @@ use super::screencast::{Frame, Screencast};
 /// Viewer configuration.
 #[derive(Debug, Clone)]
 pub struct ViewerOptions {
-    /// Bind port. The server always binds to 127.0.0.1.
+    /// Bind address. Defaults to 127.0.0.1 (loopback only). Set to 0.0.0.0 to
+    /// expose the viewer on all interfaces for remote viewing. Exposing it
+    /// lets anyone on the network watch and observe the agent-controlled page.
+    pub host: String,
+    /// Bind port.
     pub port: u16,
     /// Max time to wait for the first frame on a stream connection.
     pub first_frame_timeout: Duration,
@@ -38,6 +42,7 @@ pub struct ViewerOptions {
 impl Default for ViewerOptions {
     fn default() -> Self {
         Self {
+            host: "127.0.0.1".to_string(),
             port: 7780,
             first_frame_timeout: Duration::from_secs(10),
         }
@@ -81,7 +86,7 @@ pub async fn serve(
     screencast: Arc<Screencast>,
     opts: ViewerOptions,
 ) -> Result<ViewerHandle, std::io::Error> {
-    let addr: SocketAddr = format!("127.0.0.1:{}", opts.port)
+    let addr: SocketAddr = format!("{}:{}", opts.host, opts.port)
         .parse()
         .expect("valid addr");
     let listener = TcpListener::bind(addr).await?;

@@ -165,9 +165,13 @@ pub struct ViewArgs {
     /// Browser launch options.
     #[command(flatten)]
     pub launch: LaunchArgs,
-    /// Viewer HTTP port (binds to 127.0.0.1 only).
+    /// Viewer HTTP port.
     #[arg(long, default_value_t = 7780)]
     pub viewer_port: u16,
+    /// Viewer bind address. Default 127.0.0.1 (loopback only). Use 0.0.0.0 to
+    /// expose the viewer on all interfaces for remote viewing.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub viewer_host: String,
     /// JPEG quality (1..100) for the screencast stream.
     #[arg(long, default_value_t = 80)]
     pub quality: u32,

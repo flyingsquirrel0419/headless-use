@@ -256,6 +256,7 @@ pub async fn view(args: ViewArgs) -> i32 {
         }
     };
     let viewer_opts = crate::viewer::ViewerOptions {
+        host: args.viewer_host.clone(),
         port: args.viewer_port,
         ..Default::default()
     };
