@@ -4,27 +4,40 @@
 //! only the most recent frame (backpressure drops stale frames rather than
 //! queuing them), and acks each frame as CDP requires.
 //!
-//! On main-frame navigation (`Page.frameNavigated`) the screencast is
-//! automatically restarted, because Chrome stops delivering frames after the
-//! page's main document is replaced (e.g. `browser.open`). This keeps the live
-//! viewer working across navigations without the caller doing anything.
+//! ## Why an idle re-arm timer
+//! Chrome's `Page.startScreencast` only emits `Page.screencastFrame` when the
+//! page repaints. Two failure modes make the live viewer freeze:
+//!   1. Static pages never repaint after the initial load, so no new frames.
+//!   2. Iframe-heavy sites (e.g. naver) fire many `Page.frameNavigated` events
+//!      for subframes right after load; Chrome then appears to stop emitting
+//!      screencastFrame entirely — even mouse moves (which DO repaint on
+//!      simple sites) produce no frames.
+//!
+//! To keep the stream alive in both cases we re-issue `Page.startScreencast`
+//! whenever no frame has arrived for `IDLE_REARM_MS`. Re-arming resends a
+//! frame on the next repaint (mouse move, animation, or the re-arm's own
+//! implicit first frame) without mutating the page DOM.
 //!
 //! [Decision Log]
 //! - 목적과 의도: Provide a live frame stream for the localhost viewer without
 //!   polling `Page.captureScreenshot` (which is heavy and not designed for 30fps).
 //! - 기존 구현 및 제약 조건: No screencast support existed; screenshots were
 //!   one-shot base64 PNG captures.
-//! - 검토한 주요 대안: Poll captureScreenshot at intervals — high CPU, jank,
-//!   and not a real-time stream.
-//! - 선택한 방식: CDP Page.startScreencast + Page.screencastFrame events,
-//!   with a watch channel (held in an Arc) carrying only the latest frame.
-//!   frameNavigated triggers a restart so navigations don't freeze the stream.
-//! - 장점: Real ~30fps, low overhead, survives navigation. 단점: Requires the
-//!   page session to stay attached; stops if the target closes.
+//! - 검토한 주요 대안: (a) Poll captureScreenshot at intervals — high CPU, jank.
+//!   (b) Inject a JS repaint stimulus — mutates the page DOM, against the
+//!   project rule of not modifying the original page.
+//! - 선택한 방식: CDP Page.startScreencast + Page.screencastFrame events, with
+//!   a watch channel (held in an Arc) carrying only the latest frame.
+//!   frameNavigated triggers a restart; an idle re-arm timer (no frame for
+//!   IDLE_REARM_MS) re-issues startScreencast so frozen streams recover.
+//! - 장점: Real ~30fps, low overhead, survives navigation AND iframe storms,
+//!   no page DOM mutation. 단점: Periodic startScreencast calls add a little
+//!   CDP traffic (~one call per 2s when idle); acceptable for a viewer.
 //! - 수정 시 주의: Every screencastFrame MUST be acked (Page.screencastFrameAck)
 //!   or Chrome stops sending frames after ~2 buffered frames. The Arc<sender>
 //!   is shared between the background task and the handle so `latest()` and
-//!   `subscribe()` always see the frames the task sends.
+//!   `subscribe()` always see the frames the task sends. The idle re-arm must
+//!   NOT fire while frames are actively arriving (reset the timer on each).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +48,11 @@ use tokio::sync::watch;
 
 use crate::browser::{BrowserError, Page};
 use crate::cdp::CdpClient;
+
+/// Re-issue `Page.startScreencast` if no frame has arrived for this long.
+/// 2s is short enough to feel live on static pages, long enough not to fight
+/// an active stream.
+const IDLE_REARM_MS: u64 = 2000;
 
 /// A captured screencast frame (JPEG bytes + metadata).
 #[derive(Debug, Clone)]
@@ -62,7 +80,8 @@ pub struct Screencast {
 impl Screencast {
     /// Start a screencast on `page`. Returns the screencast handle. The
     /// background task acks every frame, updates the latest-frame channel,
-    /// and restarts the cast on main-frame navigation.
+    /// restarts the cast on main-frame navigation, and re-arms the cast when
+    /// idle so the stream never freezes.
     pub async fn start(
         page: &Page,
         quality: u32,
@@ -80,25 +99,89 @@ impl Screencast {
         let (latest_tx, _) = watch::channel::<Option<Frame>>(None);
         let latest_tx = Arc::new(latest_tx);
 
-        // Background task: decode + ack frames, restart on navigation.
-        // It holds an Arc clone of the SAME sender the handle exposes, so
-        // latest()/subscribe() see every published frame.
+        // Background task: decode + ack frames, restart on navigation, re-arm
+        // when idle. It holds an Arc clone of the SAME sender the handle
+        // exposes, so latest()/subscribe() see every published frame.
         let page_client = page.cdp().clone();
         let session_id = page.session_id().to_string();
         let latest_tx_task = latest_tx.clone();
         let start_params = (quality, max_width, max_height);
         tokio::spawn(async move {
-            while let Some(ev) = events.recv().await {
-                if ev.method == "Page.frameNavigated" {
-                    let is_main = ev
-                        .params
-                        .get("frame")
-                        .and_then(|f| f.get("parentId"))
-                        .is_none();
-                    if is_main {
-                        // Chrome stops sending frames after a main-frame swap;
-                        // restart the cast after a short render warm-up.
-                        tokio::time::sleep(Duration::from_millis(150)).await;
+            // Track the last time we received a frame, so the idle re-arm timer
+            // resets whenever frames are actively flowing.
+            let mut last_frame = tokio::time::Instant::now();
+            let idle = Duration::from_millis(IDLE_REARM_MS);
+            loop {
+                let idle_timer = tokio::time::sleep_until(last_frame + idle);
+                tokio::pin!(idle_timer);
+                tokio::select! {
+                    biased;
+                    ev = events.recv() => {
+                        let Some(ev) = ev else { break; };
+                        match ev.method.as_str() {
+                            "Page.frameNavigated" => {
+                                let is_main = ev
+                                    .params
+                                    .get("frame")
+                                    .and_then(|f| f.get("parentId"))
+                                    .is_none();
+                                if is_main {
+                                    // Chrome stops sending frames after a
+                                    // main-frame swap; restart the cast after
+                                    // a short render warm-up.
+                                    tokio::time::sleep(Duration::from_millis(150)).await;
+                                    let _ = start_cast_via_client(
+                                        &page_client,
+                                        &session_id,
+                                        start_params.0,
+                                        start_params.1,
+                                        start_params.2,
+                                    )
+                                    .await;
+                                    last_frame = tokio::time::Instant::now();
+                                }
+                            }
+                            "Page.screencastFrame" => {
+                                let params = &ev.params;
+                                let frame_session_id = params
+                                    .get("sessionId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                // Ack the frame (required) so Chrome keeps
+                                // sending frames.
+                                let _ = page_client
+                                    .call_session::<Value>(
+                                        "Page.screencastFrameAck",
+                                        Some(json!({ "sessionId": frame_session_id })),
+                                        &session_id,
+                                        Duration::from_secs(5),
+                                    )
+                                    .await;
+                                if let Some(data_b64) =
+                                    params.get("data").and_then(|v| v.as_str())
+                                {
+                                    let data = base64::engine::general_purpose::STANDARD
+                                        .decode(data_b64)
+                                        .unwrap_or_default();
+                                    let frame = Frame {
+                                        data,
+                                        metadata: params.clone(),
+                                    };
+                                    let _ = latest_tx_task.send(Some(frame));
+                                }
+                                // Reset the idle timer: we just got a frame.
+                                last_frame = tokio::time::Instant::now();
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ = &mut idle_timer => {
+                        // No frame for IDLE_REARM_MS: the stream has gone idle
+                        // (static page, or Chrome stopped emitting after an
+                        // iframe storm). Re-issue startScreencast so Chrome
+                        // sends a fresh frame on the next repaint. This does
+                        // NOT mutate the page DOM.
                         let _ = start_cast_via_client(
                             &page_client,
                             &session_id,
@@ -107,37 +190,10 @@ impl Screencast {
                             start_params.2,
                         )
                         .await;
+                        // Push the re-arm point forward so we don't spam while
+                        // waiting for the post-rearm frame.
+                        last_frame = tokio::time::Instant::now();
                     }
-                    continue;
-                }
-                if ev.method != "Page.screencastFrame" {
-                    continue;
-                }
-                let params = &ev.params;
-                let frame_session_id = params
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // Ack the frame (required) so Chrome keeps sending frames.
-                let _ = page_client
-                    .call_session::<Value>(
-                        "Page.screencastFrameAck",
-                        Some(json!({ "sessionId": frame_session_id })),
-                        &session_id,
-                        Duration::from_secs(5),
-                    )
-                    .await;
-
-                if let Some(data_b64) = params.get("data").and_then(|v| v.as_str()) {
-                    let data = base64::engine::general_purpose::STANDARD
-                        .decode(data_b64)
-                        .unwrap_or_default();
-                    let frame = Frame {
-                        data,
-                        metadata: params.clone(),
-                    };
-                    let _ = latest_tx_task.send(Some(frame));
                 }
             }
             // Event channel closed (page/target gone): drop and exit.
