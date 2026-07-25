@@ -133,7 +133,13 @@ impl<'a> Mouse<'a> {
     }
 
     /// Move the cursor from its current position to `p` over `duration`, in
-    /// `steps` interpolated steps. Linear interpolation; easing is extensible.
+    /// `steps` interpolated steps.
+    ///
+    /// Uses an ease-in-out curve (smooth start and end, faster in the middle)
+    /// plus a slight perpendicular bow so the path looks like a natural human
+    /// hand movement rather than a straight teleport. This matters for the
+    /// live viewer: a linear, instant snap looks robotic and is hard to follow
+    /// by eye.
     pub async fn move_smooth(
         &self,
         p: Point,
@@ -151,10 +157,35 @@ impl<'a> Mouse<'a> {
             Duration::from_millis(0)
         };
         let buttons = *self.buttons.lock().await;
+        // Perpendicular bow magnitude: a small fraction of the travel
+        // distance, capped so very short moves stay near-linear.
+        let dx = p.x - start.x;
+        let dy = p.y - start.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let bow = (dist * 0.12).min(120.0);
+        // Perpendicular unit vector (rotated 90deg). If dist is ~0 the bow
+        // is ~0 anyway, so the direction doesn't matter.
+        let (px, py) = if dist > 0.0001 {
+            (-dy / dist, dx / dist)
+        } else {
+            (0.0, 0.0)
+        };
         for i in 1..=steps {
-            let t = i as f64 / steps as f64;
-            let x = start.x + (p.x - start.x) * t;
-            let y = start.y + (p.y - start.y) * t;
+            let lin = i as f64 / steps as f64;
+            // Ease-in-out: slow at the ends, fast in the middle. This makes
+            // the cursor visibly accelerate then decelerate instead of moving
+            // at a constant linear speed.
+            let eased = if lin < 0.5 {
+                2.0 * lin * lin
+            } else {
+                1.0 - ((-2.0 * lin + 2.0).powi(2)) / 2.0
+            };
+            // Quadratic bow: the curve peaks at t=0.5 and returns to 0 at
+            // the endpoints, so start and end land exactly on the straight
+            // line (the cursor still ends at `p`).
+            let bow_t = 4.0 * lin * (1.0 - lin);
+            let x = start.x + dx * eased + px * bow * bow_t;
+            let y = start.y + dy * eased + py * bow * bow_t;
             self.dispatch(
                 "mouseMoved",
                 Point { x, y },

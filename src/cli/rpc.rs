@@ -105,7 +105,26 @@ pub async fn dispatch(
         }
         "mouse.move" => {
             let p = parse_point_param(params)?;
-            session.mouse().move_to(p, Modifiers::NONE).await?;
+            // Optional smooth move: `duration` (ms) and `steps`. When duration
+            // > 0 the cursor eases along a slight curve instead of snapping,
+            // which looks natural in the live viewer. When omitted (0), it
+            // falls back to the instant move_to for backward compatibility.
+            let duration_ms = params
+                .get("duration")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if duration_ms > 0 {
+                let steps = params
+                    .get("steps")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(30) as u32;
+                session
+                    .mouse()
+                    .move_smooth(p, Modifiers::NONE, Duration::from_millis(duration_ms), steps)
+                    .await?;
+            } else {
+                session.mouse().move_to(p, Modifiers::NONE).await?;
+            }
             Ok(json!({ "pointer": { "x": p.x, "y": p.y } }))
         }
         "mouse.down" => {

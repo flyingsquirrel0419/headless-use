@@ -34,12 +34,18 @@
     'transform:translate(-3px,-3px);' +
     'transition:width .08s ease,height .08s ease,opacity .12s ease;' +
     'opacity:0;will-change:left,top,transform;';
+  // Rounded soft pointer: a teardrop/arrow with curved edges and a rounded
+  // tip, instead of the sharp angular arrow. The path uses quadratic curves
+  // so the outline has no hard corners, which reads as more "alive" and less
+  // robotic in the live viewer.
   cursor.innerHTML =
     '<svg width="' + SIZE + '" height="' + SIZE + '" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M6 3l0 18 4.5-4.5 3.2 7 2.2-1-3.2-7 6 0z" ' +
+    // Glow halo (blurred rounded pointer behind).
+    '<path d="M5 3 Q4 3 4 4 L4 20 Q4 21.8 5.6 21 L9.5 18.6 L12.4 25.2 Q12.9 26.4 14 25.9 L15.6 25.1 Q16.7 24.5 16.2 23.3 L13.3 16.7 L18 16.7 Q19.8 16.7 19 15 Z" ' +
     'fill="#5ce1ff" opacity="0.6" filter="url(#huGlow)"/>' +
-    '<path d="M6 3l0 18 4.5-4.5 3.2 7 2.2-1-3.2-7 6 0z" ' +
-    'fill="#a0f0ff" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"/>' +
+    // Core rounded pointer.
+    '<path d="M5 3 Q4 3 4 4 L4 20 Q4 21.8 5.6 21 L9.5 18.6 L12.4 25.2 Q12.9 26.4 14 25.9 L15.6 25.1 Q16.7 24.5 16.2 23.3 L13.3 16.7 L18 16.7 Q19.8 16.7 19 15 Z" ' +
+    'fill="#a0f0ff" stroke="#ffffff" stroke-width="1.1" stroke-linejoin="round"/>' +
     '<defs><filter id="huGlow" x="-80%" y="-80%" width="260%" height="260%">' +
     '<feGaussianBlur stdDeviation="3.5"/></filter></defs>' +
     '</svg>';
