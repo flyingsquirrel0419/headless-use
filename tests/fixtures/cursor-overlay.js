@@ -22,30 +22,36 @@
   if (window.__hu_cursor_injected) return;
   window.__hu_cursor_injected = true;
 
+  // Cursor size is intentionally large (48px) so it stays visible on
+  // high-DPI viewer tabs and at small thumbnail sizes in recordings.
+  var SIZE = 48;
+
   var cursor = document.createElement('div');
   cursor.id = 'hu-cursor';
   cursor.style.cssText =
-    'position:fixed;left:0;top:0;width:28px;height:28px;' +
+    'position:fixed;left:0;top:0;width:' + SIZE + 'px;height:' + SIZE + 'px;' +
     'pointer-events:none;z-index:2147483647;' +
-    'transform:translate(-2px,-2px);' +
+    'transform:translate(-3px,-3px);' +
     'transition:width .08s ease,height .08s ease,opacity .12s ease;' +
     'opacity:0;will-change:left,top,transform;';
   cursor.innerHTML =
-    '<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">' +
+    '<svg width="' + SIZE + '" height="' + SIZE + '" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">' +
     '<path d="M6 3l0 18 4.5-4.5 3.2 7 2.2-1-3.2-7 6 0z" ' +
-    'fill="#5ce1ff" opacity="0.55" filter="url(#huGlow)"/>' +
+    'fill="#5ce1ff" opacity="0.6" filter="url(#huGlow)"/>' +
     '<path d="M6 3l0 18 4.5-4.5 3.2 7 2.2-1-3.2-7 6 0z" ' +
-    'fill="#a0f0ff" stroke="#ffffff" stroke-width="1.4" stroke-linejoin="round"/>' +
-    '<defs><filter id="huGlow" x="-60%" y="-60%" width="220%" height="220%">' +
-    '<feGaussianBlur stdDeviation="2.2"/></filter></defs>' +
+    'fill="#a0f0ff" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"/>' +
+    '<defs><filter id="huGlow" x="-80%" y="-80%" width="260%" height="260%">' +
+    '<feGaussianBlur stdDeviation="3.5"/></filter></defs>' +
     '</svg>';
 
+  // A ring shown on press for click feedback, scaled to the cursor size.
   var ring = document.createElement('div');
   ring.id = 'hu-cursor-ring';
   ring.style.cssText =
-    'position:fixed;left:0;top:0;width:20px;height:20px;' +
+    'position:fixed;left:0;top:0;width:' + (SIZE * 0.6) + 'px;height:' + (SIZE * 0.6) + 'px;' +
     'pointer-events:none;z-index:2147483646;' +
-    'border:2px solid #5ce1ff;border-radius:50%;' +
+    'border:3px solid #5ce1ff;border-radius:50%;' +
+    'box-shadow:0 0 12px #5ce1ff;' +
     'transform:translate(-50%,-50%) scale(0);opacity:0;' +
     'transition:transform .12s ease,opacity .2s ease;';
 
@@ -70,12 +76,15 @@
     moveCursor(); moveRing();
     ring.style.opacity = '1';
     ring.style.transform = 'translate(-50%,-50%) scale(1)';
-    cursor.style.width = '32px'; cursor.style.height = '32px';
+    // Enlarge the arrow ~20% on press for tactile feedback.
+    cursor.style.width = (SIZE * 1.2) + 'px';
+    cursor.style.height = (SIZE * 1.2) + 'px';
   }, true);
   document.addEventListener('pointerup', function () {
     ring.style.opacity = '0';
     ring.style.transform = 'translate(-50%,-50%) scale(0)';
-    cursor.style.width = '28px'; cursor.style.height = '28px';
+    cursor.style.width = SIZE + 'px';
+    cursor.style.height = SIZE + 'px';
   }, true);
   document.addEventListener('pointerleave', function () { cursor.style.opacity = '0.25'; }, true);
   document.addEventListener('pointerenter', function () { cursor.style.opacity = '1'; }, true);
