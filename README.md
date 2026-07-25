@@ -167,13 +167,29 @@ server ← {content: [{type:"text", text:"{...elements...}"}], isError: false}
 
 ```
 headless-use
-├── launch      Launch a browser and keep it running
+├── launch       Launch a browser and keep it running
 ├── serve        Start a long-lived JSON-RPC session over stdio
 ├── run          Run a one-shot action and exit
+├── view         Serve a live viewer + JSON-RPC session (see below)
+├── replay       Re-execute a recorded trace from a run directory
 ├── doctor       Diagnose the environment
 ├── install-browser   Print browser install guidance
 └── mcp          Start the MCP server over stdio
 ```
+
+### Live viewer
+
+```bash
+headless-use view --no-sandbox          # http://127.0.0.1:7780/
+```
+
+`view` behaves exactly like `serve` (JSON-RPC on stdio) and additionally serves
+an MJPEG stream of the page with the agent cursor overlay.
+
+> **Exposure note:** the viewer binds to `127.0.0.1` by default.
+> `--viewer-host 0.0.0.0` opens it to the network, and the stream is
+> **unauthenticated** — anyone who can reach that address sees whatever the page
+> shows, including logged-in content. See [docs/security.md](docs/security.md).
 
 `serve` accepts JSON-RPC methods including: `browser.open`, `observe`, `screenshot`,
 `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`, `scroll`, `mouse.drag`,
@@ -233,8 +249,12 @@ wrapper.
 
 See [docs/security.md](docs/security.md). Key points: CDP binds to `127.0.0.1`
 only, secrets are masked in traces (including auto-detection of password fields),
-file-path traversal is rejected, and a host allow/deny policy is enforced on
-navigation (`--allow-host`/`--deny-host`).
+agent-supplied file paths (`trace.start`, `replay`) are confined to the working
+directory, Chrome site isolation stays on, and a host allow/deny policy is
+enforced on navigation (`--allow-host`/`--deny-host`) — which also restricts
+navigation to `http`/`https`, so `file:`/`data:`/`javascript:` URLs cannot slip
+past a host rule. The live viewer is loopback-only unless you widen it with
+`--viewer-host`, which is unauthenticated by design.
 
 ## Community
 

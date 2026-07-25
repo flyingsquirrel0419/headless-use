@@ -11,11 +11,15 @@
 //!   size for a single-endpoint localhost MJPEG stream.
 //! - 선택한 방식: tokio TcpListener + hand-written HTTP/1.0 multipart
 //!   x-mixed-replace response. MJPEG is a trivial text protocol here.
-//! - 장점: Zero new dependencies, minimal binary growth, localhost-only by
-//!   construction. 단점: Hand-written HTTP is minimal (no keep-alive); fine
-//!   for a single local viewer.
-//! - 수정 시 주의: ALWAYS bind to 127.0.0.1 only. Exposing this to 0.0.0.0
-//!   would leak the remote page and violates the project's CDP-exposure rule.
+//! - 장점: Zero new dependencies, minimal binary growth. 단점: Hand-written
+//!   HTTP is minimal (no keep-alive); fine for a single local viewer.
+//! - 수정 시 주의: The default bind is 127.0.0.1 and should stay that way.
+//!   `--viewer-host` can widen it (added for remote viewing over a trusted
+//!   network), and that is a deliberate exposure decision by the operator:
+//!   **the stream carries whatever the agent-controlled page is showing —
+//!   including logged-in session content — and there is no authentication on
+//!   it.** [`serve`] logs a warning whenever the bind address is not loopback.
+//!   This is separate from the CDP endpoint, which is always 127.0.0.1-only.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -86,11 +90,31 @@ pub async fn serve(
     screencast: Arc<Screencast>,
     opts: ViewerOptions,
 ) -> Result<ViewerHandle, std::io::Error> {
+    // A bad --viewer-host must surface as a clean error, not a panic.
     let addr: SocketAddr = format!("{}:{}", opts.host, opts.port)
         .parse()
-        .expect("valid addr");
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid viewer bind address '{}:{}': {e}",
+                    opts.host, opts.port
+                ),
+            )
+        })?;
     let listener = TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
+    if !bound_addr.ip().is_loopback() {
+        tracing::warn!(
+            addr = %bound_addr,
+            "viewer is bound to a non-loopback address; the page stream is unauthenticated and \
+             anyone who can reach this address can watch the agent-controlled browser"
+        );
+        eprintln!(
+            "warning: viewer bound to {bound_addr} (not loopback). The stream is unauthenticated — \
+             anyone who can reach this address can watch the agent-controlled page."
+        );
+    }
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -126,14 +150,15 @@ async fn handle_connection(
     screencast: &Arc<Screencast>,
     first_frame_timeout: Duration,
 ) -> std::io::Result<()> {
-    // Read the request line (minimal; we only care about the path).
-    let mut buf = [0u8; 1024];
-    let n = stream.read(&mut buf).await.unwrap_or(0);
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
+    // Read until we have the full request line. A single `read` can return a
+    // partial line (the request may be split across TCP segments), which would
+    // route the connection to 404 for no reason.
+    let Some(request_line) = read_request_line(stream).await else {
+        return write_text(stream, 400, "bad request").await;
+    };
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
         .unwrap_or("/")
         .to_string();
 
@@ -142,6 +167,29 @@ async fn handle_connection(
         "/stream" | "/mjpeg" => write_stream(stream, screencast, first_frame_timeout).await,
         "/health" => write_text(stream, 200, "ok").await,
         _ => write_text(stream, 404, "not found").await,
+    }
+}
+
+/// Read bytes until the first CRLF/LF and return the request line.
+///
+/// Bounded by `MAX_REQUEST_LINE` so a client that never sends a newline cannot
+/// make us buffer without limit. Returns `None` on EOF or an over-long line.
+async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Option<String> {
+    const MAX_REQUEST_LINE: usize = 8 * 1024;
+    let mut acc: Vec<u8> = Vec::with_capacity(256);
+    let mut buf = [0u8; 512];
+    loop {
+        if let Some(pos) = acc.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(&acc[..pos]).trim_end().to_string();
+            return Some(line);
+        }
+        if acc.len() > MAX_REQUEST_LINE {
+            return None;
+        }
+        match stream.read(&mut buf).await {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => acc.extend_from_slice(&buf[..n]),
+        }
     }
 }
 
@@ -160,8 +208,14 @@ async fn write_text(
     code: u16,
     msg: &str,
 ) -> std::io::Result<()> {
+    let reason = match code {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Error",
+    };
     let resp = format!(
-        "HTTP/1.0 {code} OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}",
+        "HTTP/1.0 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}",
         msg.len()
     );
     stream.write_all(resp.as_bytes()).await

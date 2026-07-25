@@ -173,12 +173,11 @@ impl Session {
     /// Attach a host allow/deny navigation policy. When set, navigation to a
     /// host not on the allow list (or on the deny list) returns
     /// [`BrowserError::NavigationBlocked`] before any request is made.
-    pub fn with_policy(self, policy: Policy) -> Self {
-        *self.policy.blocking_lock() = policy;
-        self
-    }
-
-    /// Async version of [`Self::with_policy`].
+    /// A configured policy also restricts navigation to `http`/`https`.
+    ///
+    /// There is no blocking variant: an earlier `with_policy` used
+    /// `Mutex::blocking_lock`, which panics when called from inside a tokio
+    /// runtime — i.e. from every real caller.
     pub async fn with_policy_async(self, policy: Policy) -> Self {
         *self.policy.lock().await = policy;
         self
@@ -196,14 +195,6 @@ impl Session {
     pub fn nav_generation_value(&self) -> u32 {
         self.nav_generation
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Ensure the CDP network tracker is running. It is started in
-    /// [`Session::start`], so this is typically a no-op, but kept for safety.
-    pub async fn ensure_network_tracker(&self) -> Result<(), BrowserError> {
-        // Tracker is already started in Session::start(). This is a no-op
-        // but kept for backward compatibility and defensive use.
-        Ok(())
     }
 
     /// Current in-flight network request count (via CDP events).
@@ -239,11 +230,17 @@ impl Session {
     }
 
     /// Reload the page.
+    ///
+    /// Issues CDP `Page.reload` rather than re-navigating to the current URL.
+    /// A re-navigation is a different operation: it drops the history entry's
+    /// POST body and scroll restoration, so a reloaded form-result page came
+    /// back as a fresh GET. The policy is still consulted for the current URL,
+    /// which is what a reload will re-request.
     pub async fn reload(&self) -> Result<(), BrowserError> {
-        let url = self.page.url().await.unwrap_or_default();
+        let url = self.page.url().await?;
         self.check_policy(&url).await?;
         self.record_action("reload", json!({})).await;
-        self.page.goto(&url).await
+        self.page.reload().await
     }
 
     /// Build a mouse engine sharing the session's persistent cursor state.
@@ -297,6 +294,25 @@ impl Session {
         ref_id: RefId,
         expected_generation: Option<u32>,
     ) -> Result<(f64, f64), BrowserError> {
+        let (x, y, w, h) = self
+            .resolve_ref_rect_with_generation(ref_id, expected_generation)
+            .await?;
+        Ok((x + w / 2.0, y + h / 2.0))
+    }
+
+    /// Resolve a reference to its current **viewport-relative** bounding box
+    /// `(x, y, width, height)`, scrolling it into view first.
+    ///
+    /// This is the shared primitive behind click-point resolution and element
+    /// screenshots. Callers that need document coordinates (e.g.
+    /// `Page.captureScreenshot`'s `clip`) must add the page scroll offset —
+    /// read it *after* this call, since scrolling the element into view moves
+    /// the page.
+    pub async fn resolve_ref_rect_with_generation(
+        &self,
+        ref_id: RefId,
+        expected_generation: Option<u32>,
+    ) -> Result<(f64, f64, f64, f64), BrowserError> {
         let obs = self.last_observation().await.ok_or_else(|| {
             BrowserError::ElementNotFound("no observation; run `observe` first".to_string())
         })?;
@@ -329,14 +345,14 @@ impl Session {
             )));
         }
         // Re-resolve current bounds via JS using the selector hint or role/name.
-        let center = self.resolve_element_center(el).await?;
-        Ok(center)
+        self.resolve_element_rect(el).await
     }
 
-    async fn resolve_element_center(
+    /// Re-query an observed element's current viewport-relative bounding box.
+    async fn resolve_element_rect(
         &self,
         el: &crate::observe::ElementRef,
-    ) -> Result<(f64, f64), BrowserError> {
+    ) -> Result<(f64, f64, f64, f64), BrowserError> {
         // Re-resolve the element's current bounds. We inject the search text via
         // JSON.stringify so any character (Korean, quotes, backslashes) is safe
         // and cannot break the JS string literal.
@@ -386,7 +402,7 @@ impl Session {
                 el.ref_id
             )));
         }
-        Ok((x + w / 2.0, y + h / 2.0))
+        Ok((x, y, w, h))
     }
 
     /// Click a reference or coordinate.
@@ -529,13 +545,7 @@ impl Session {
         element: Option<ClickTarget>,
     ) -> Result<Vec<u8>, BrowserError> {
         let clip = match &element {
-            Some(target) => {
-                let (x, y) = self.resolve_click_point(target.clone()).await?;
-                // Resolve the element bounds to a clip rectangle. We re-query
-                // the element under the resolved center point via elementFromPoint
-                // so the clip matches the actual rendered box, not just a point.
-                Some(self.element_clip_at(x, y).await?)
-            }
+            Some(target) => Some(self.element_clip(target.clone()).await?),
             None => None,
         };
         let element_ref = match &element {
@@ -558,8 +568,40 @@ impl Session {
         Ok(data)
     }
 
-    /// Compute a clip rectangle for the element under viewport point (x, y).
-    /// Uses elementFromPoint to find the topmost element, then its bounding box.
+    /// Compute the `Page.captureScreenshot` clip rectangle for a target, in
+    /// **document** coordinates.
+    ///
+    /// Two things this has to get right:
+    ///
+    /// 1. `getBoundingClientRect()` is viewport-relative but CDP's `clip` is
+    ///    document-relative, so the page scroll offset must be added. Without
+    ///    it, any element screenshot taken on a scrolled page captured the
+    ///    wrong region. The offset is read *after* the element is scrolled into
+    ///    view, because that scroll changes it.
+    /// 2. For a `Ref` target we use the referenced element's own box. Going
+    ///    through `elementFromPoint` at the element's center (the previous
+    ///    behavior) returns the topmost *descendant* under that point — an
+    ///    inner `<span>` rather than the `<button>` that was referenced — so
+    ///    the clip came out too small. `elementFromPoint` is still the right
+    ///    tool for a bare coordinate target, where there is no element to
+    ///    resolve.
+    async fn element_clip(
+        &self,
+        target: ClickTarget,
+    ) -> Result<(f64, f64, f64, f64), BrowserError> {
+        let (x, y, w, h) = match target {
+            ClickTarget::Ref { id, generation } => {
+                self.resolve_ref_rect_with_generation(id, generation)
+                    .await?
+            }
+            ClickTarget::Point(p) => self.element_clip_at(p.x, p.y).await?,
+        };
+        let (scroll_x, scroll_y) = self.page.scroll_position().await?;
+        Ok((x + scroll_x as f64, y + scroll_y as f64, w, h))
+    }
+
+    /// Compute a viewport-relative clip rectangle for the element under
+    /// viewport point (x, y), via `elementFromPoint`.
     async fn element_clip_at(&self, x: f64, y: f64) -> Result<(f64, f64, f64, f64), BrowserError> {
         let expr = format!(
             "(()=>{{const e=document.elementFromPoint({x},{y});if(!e)return null;const r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"

@@ -113,8 +113,18 @@ pub fn shm_size_mb() -> Option<u64> {
 /// absolute escapes outside the intended base.
 ///
 /// ## Why
-/// The agent may pass file paths (screenshots, file drops). Without validation
-/// a path like `../../etc/passwd` could read or overwrite unintended files.
+/// Paths that arrive over the JSON-RPC/MCP surface are chosen by the *agent*,
+/// not by the operator who started the process. `trace.start` creates a
+/// directory at a caller-supplied path and `replay` reads one, so without a
+/// bound a prompt-injected agent could write into or read from anywhere the
+/// process user can reach. Every such path is resolved against the working
+/// directory via this function (see [`crate::cli::rpc::dispatch`]).
+///
+/// Paths passed as CLI arguments (`run --screenshot out.png`) are *not*
+/// validated: those come from the operator, who already has a shell.
+///
+/// Relative paths are joined onto `base`; absolute paths are accepted only if
+/// they already live inside `base`.
 pub fn validate_path_within(
     base: &std::path::Path,
     target: &str,
@@ -129,15 +139,30 @@ pub fn validate_path_within(
     // Canonicalize the base and join; ensure the result stays within base.
     let base_canon = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
     let joined = base_canon.join(target_path);
-    if !joined.starts_with(&base_canon) {
+    // Canonicalize the join too when it exists, so a symlink pointing outside
+    // `base` cannot be used to escape it. A path that does not exist yet
+    // (a trace dir about to be created) has no symlinks to follow.
+    let resolved = std::fs::canonicalize(&joined).unwrap_or(joined);
+    if !resolved.starts_with(&base_canon) {
         return Err(format!("path escapes base: '{target}'"));
     }
-    Ok(joined)
+    Ok(resolved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_path_rejects_traversal_and_escapes() {
+        let base = std::env::temp_dir();
+        assert!(validate_path_within(&base, "../etc/passwd").is_err());
+        assert!(validate_path_within(&base, "a/../../b").is_err());
+        assert!(validate_path_within(&base, "/etc/passwd").is_err());
+        // A plain relative path lands inside the base.
+        let ok = validate_path_within(&base, "runs/abc").expect("relative path allowed");
+        assert!(ok.starts_with(std::fs::canonicalize(&base).unwrap_or(base)));
+    }
 
     #[test]
     fn epoch_known_date() {

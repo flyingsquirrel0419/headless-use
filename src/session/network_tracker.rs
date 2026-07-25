@@ -24,7 +24,7 @@
 //! means any request that happened at all (even a fast one) resets the idle
 //! clock, so we never return stable while the network is genuinely busy.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -56,6 +56,13 @@ pub struct TrackedRequest {
     pub failed: Option<String>,
     /// Whether the request has finished (completed or failed).
     pub finished: bool,
+    /// When `requestWillBeSent` was observed, used to compute `duration_ms`.
+    ///
+    /// CDP's `timestamp` field is a monotonic clock reading, not an elapsed
+    /// time — multiplying it by 1000 (as an earlier version did) produced a
+    /// meaningless number. We measure locally instead.
+    #[serde(skip)]
+    started_at: Option<Instant>,
 }
 
 impl TrackedRequest {
@@ -87,16 +94,21 @@ impl TrackedRequest {
             duration_ms: None,
             failed: None,
             finished: false,
+            started_at: Some(Instant::now()),
         }
     }
 }
 
 /// Inner mutable state guarded by the mutex.
+/// Maximum number of completed requests kept for diagnostics.
+const HISTORY_LIMIT: usize = 1000;
+
 struct Inner {
     /// In-flight request ids (started, not yet finished).
     in_flight: HashMap<String, TrackedRequest>,
     /// Bounded history of completed/failed requests (most recent last).
-    history: Vec<TrackedRequest>,
+    /// A `VecDeque` so trimming the oldest entry is O(1), not O(n).
+    history: VecDeque<TrackedRequest>,
     /// Timestamp of the most recent network event of any kind.
     last_activity: Instant,
     /// Whether Network domain was enabled.
@@ -109,49 +121,55 @@ impl Inner {
         self.in_flight.insert(req.request_id.clone(), req);
     }
 
+    /// Record a response header arrival. The body may still be streaming, so
+    /// the request stays **in flight** until `loadingFinished`/`loadingFailed`.
+    ///
+    /// An earlier version moved the request to history here (the
+    /// `status.is_some()` branch matched before the "keep it in flight" one).
+    /// That made `pending()` drop to zero the moment headers arrived, and the
+    /// later `loadingFinished` found nothing to update — so `finished` stayed
+    /// `false` and `duration_ms` stayed `None` for every successful request.
+    fn record_response(&mut self, request_id: &str, status: u16) {
+        self.last_activity = Instant::now();
+        if let Some(req) = self.in_flight.get_mut(request_id) {
+            req.status = Some(status);
+        }
+    }
+
+    /// Move a request out of the in-flight set into the bounded history.
     fn mark_finished(&mut self, request_id: &str, finisher: Finisher) {
         self.last_activity = Instant::now();
-        if let Some(mut req) = self.in_flight.remove(request_id) {
-            match finisher {
-                Finisher::Response { status } => {
-                    req.status = Some(status);
-                }
-                Finisher::Completed { duration_ms } => {
-                    req.duration_ms = Some(duration_ms);
-                    req.finished = true;
-                }
-                Finisher::Failed { error, duration_ms } => {
-                    req.failed = Some(error);
-                    req.duration_ms = duration_ms;
-                    req.finished = true;
-                }
+        let Some(mut req) = self.in_flight.remove(request_id) else {
+            return;
+        };
+        req.duration_ms = req
+            .started_at
+            .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+            .map(|ms| (ms * 100.0).round() / 100.0);
+        match finisher {
+            Finisher::Completed => {}
+            Finisher::Failed { error } => {
+                req.failed = Some(error);
             }
-            // Keep a bounded history so wait and network share one source.
-            if req.finished || req.status.is_some() {
-                self.history.push(req);
-                // Bound the history so a very chatty page cannot grow memory
-                // without limit. 1000 entries is ample for diagnostics.
-                if self.history.len() > 1000 {
-                    self.history.remove(0);
-                }
-            } else {
-                // A response without completion: keep it in-flight until finish.
-                self.in_flight.insert(request_id.to_string(), req);
-            }
+        }
+        req.finished = true;
+        // Bound the history so a very chatty page cannot grow memory without
+        // limit. HISTORY_LIMIT entries is ample for diagnostics.
+        self.history.push_back(req);
+        if self.history.len() > HISTORY_LIMIT {
+            self.history.pop_front();
         }
     }
 }
 
-/// How a request completed.
+/// How a request left the in-flight set.
 enum Finisher {
-    /// A response was received (HTTP status).
-    Response { status: u16 },
     /// The request completed loading successfully.
-    Completed { duration_ms: f64 },
+    Completed,
     /// The request failed.
     Failed {
+        /// CDP `errorText`, e.g. `net::ERR_CONNECTION_REFUSED`.
         error: String,
-        duration_ms: Option<f64>,
     },
 }
 
@@ -166,7 +184,7 @@ impl NetworkTracker {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 in_flight: HashMap::new(),
-                history: Vec::new(),
+                history: VecDeque::new(),
                 last_activity: Instant::now(),
                 enabled: false,
             })),
@@ -207,29 +225,12 @@ impl NetworkTracker {
                                 .and_then(|r| r.get("status"))
                                 .and_then(|s| s.as_u64()),
                         ) {
-                            inner.lock().await.mark_finished(
-                                id,
-                                Finisher::Response {
-                                    status: status as u16,
-                                },
-                            );
+                            inner.lock().await.record_response(id, status as u16);
                         }
                     }
                     "Network.loadingFinished" => {
                         if let Some(id) = event.params.get("requestId").and_then(|v| v.as_str()) {
-                            let ts = event
-                                .params
-                                .get("timestamp")
-                                .and_then(|t| t.as_f64())
-                                .unwrap_or(0.0);
-                            // CDP timestamps are seconds since process start;
-                            // we approximate duration from the start if available,
-                            // otherwise report 0.
-                            let dur = ts.max(0.0) * 1000.0;
-                            inner
-                                .lock()
-                                .await
-                                .mark_finished(id, Finisher::Completed { duration_ms: dur });
+                            inner.lock().await.mark_finished(id, Finisher::Completed);
                         }
                     }
                     "Network.loadingFailed" => {
@@ -240,19 +241,10 @@ impl NetworkTracker {
                                 .and_then(|e| e.as_str())
                                 .unwrap_or("network error")
                                 .to_string();
-                            let ts = event
-                                .params
-                                .get("timestamp")
-                                .and_then(|t| t.as_f64())
-                                .unwrap_or(0.0);
-                            let dur = if ts > 0.0 { Some(ts * 1000.0) } else { None };
-                            inner.lock().await.mark_finished(
-                                id,
-                                Finisher::Failed {
-                                    error,
-                                    duration_ms: dur,
-                                },
-                            );
+                            inner
+                                .lock()
+                                .await
+                                .mark_finished(id, Finisher::Failed { error });
                         }
                     }
                     _ => {}
@@ -284,7 +276,7 @@ impl NetworkTracker {
     /// In-flight requests are included so `browser_network` shows ongoing work.
     pub async fn history(&self) -> Vec<TrackedRequest> {
         let g = self.inner.lock().await;
-        let mut out = g.history.clone();
+        let mut out: Vec<TrackedRequest> = g.history.iter().cloned().collect();
         out.extend(g.in_flight.values().cloned());
         out
     }
@@ -352,7 +344,7 @@ mod tests {
             .inner
             .lock()
             .await
-            .mark_finished("A", Finisher::Completed { duration_ms: 5.0 });
+            .mark_finished("A", Finisher::Completed);
         assert_eq!(tracker.pending().await, 0);
 
         // The idle clock reflects the completion event, not the start.
@@ -383,7 +375,6 @@ mod tests {
             "F",
             Finisher::Failed {
                 error: "net::ERR_FAILED".into(),
-                duration_ms: Some(3.0),
             },
         );
         let hist = tracker.history().await;
@@ -391,5 +382,71 @@ mod tests {
         assert_eq!(hist[0].failed.as_deref(), Some("net::ERR_FAILED"));
         assert!(hist[0].finished);
         assert_eq!(tracker.pending().await, 0);
+    }
+
+    /// Regression: `responseReceived` used to move the request straight into
+    /// history, so `pending()` dropped to 0 while the body was still streaming
+    /// and the later `loadingFinished` had nothing left to update — leaving
+    /// `finished: false` and `duration_ms: None` on every successful request.
+    #[tokio::test]
+    async fn response_headers_keep_request_in_flight_until_finished() {
+        let tracker = NetworkTracker::new();
+        let params = json!({
+            "requestId": "R",
+            "type": "Document",
+            "request": { "method": "GET", "url": "https://x/page" }
+        });
+        tracker
+            .inner
+            .lock()
+            .await
+            .record_started(TrackedRequest::from_started(&params));
+
+        // Headers arrive: status recorded, but the body is still streaming.
+        tracker.inner.lock().await.record_response("R", 200);
+        assert_eq!(
+            tracker.pending().await,
+            1,
+            "a request whose body is still streaming must stay in flight"
+        );
+        assert!(
+            tracker.history().await.iter().all(|r| !r.finished),
+            "nothing should be marked finished yet"
+        );
+
+        // Body done.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tracker
+            .inner
+            .lock()
+            .await
+            .mark_finished("R", Finisher::Completed);
+        assert_eq!(tracker.pending().await, 0);
+
+        let hist = tracker.history().await;
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].status, Some(200), "status survives the move");
+        assert!(hist[0].finished);
+        let dur = hist[0].duration_ms.expect("duration must be recorded");
+        assert!(
+            (10.0..5_000.0).contains(&dur),
+            "duration should be a real elapsed time, got {dur}"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_is_bounded() {
+        let tracker = NetworkTracker::new();
+        for i in 0..(HISTORY_LIMIT + 10) {
+            let id = format!("r{i}");
+            let params = json!({
+                "requestId": id,
+                "request": { "method": "GET", "url": "https://x/y" }
+            });
+            let mut g = tracker.inner.lock().await;
+            g.record_started(TrackedRequest::from_started(&params));
+            g.mark_finished(&id, Finisher::Completed);
+        }
+        assert_eq!(tracker.history().await.len(), HISTORY_LIMIT);
     }
 }

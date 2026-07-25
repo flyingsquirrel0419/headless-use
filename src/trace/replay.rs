@@ -9,9 +9,11 @@
 //!
 //! ## What is replayable
 //! Every action type that `Session::record_action` writes is replayable:
-//! `open`, `reload`, `click`, `hover`, `type`, `insert-text`, `key.press`,
-//! `scroll`, `mouse.drag`, `screenshot`, `wait`. Non-actionable entries
-//! (unknown types, `browser.close`) are skipped with a note. Actions whose
+//! `open`, `reload`, `mouse.click`, `hover`, `type`, `insert-text`,
+//! `key.press`, `scroll`, `mouse.drag`, `screenshot`, `wait` — see
+//! [`REPLAYABLE`]. Non-actionable entries (`browser.close`, `trace.*`) and
+//! action types outside that list are reported as **skipped**, never as a
+//! silent success. Actions whose
 //! parameters reference element refs (`@eN`) require a fresh `observe` —
 //! replay re-observes automatically before the first ref-resolving action and
 //! again after any `open`/`reload` navigation, since refs are generation-bound.
@@ -108,8 +110,44 @@ async fn read_actions(run_dir: &Path) -> Result<Vec<TraceEntry>, std::io::Error>
 }
 
 /// Whether an action type requires a valid observation (refs may be stale).
+///
+/// The action-type strings MUST match what [`crate::session::Session`] writes
+/// via `record_action` — clicks are recorded as `mouse.click`, not `click`.
+/// A mismatch here silently skips the re-observe; a mismatch in
+/// [`dispatch_replay_action`] silently skips the action itself and still
+/// reports success, so both accept the recorded name and the short alias.
 fn needs_observation(action_type: &str) -> bool {
-    matches!(action_type, "click" | "hover" | "screenshot")
+    matches!(
+        action_type,
+        "mouse.click" | "click" | "hover" | "screenshot"
+    )
+}
+
+/// Action types that are recorded but intentionally not replayed.
+const KNOWN_UNREPLAYABLE: &[&str] = &["browser.close", "", "trace.start", "trace.stop"];
+
+/// Action types [`dispatch_replay_action`] knows how to execute.
+///
+/// Kept in sync with the `record_action` calls in [`crate::session::Session`].
+/// `replay` refuses to count anything outside this list as a success.
+const REPLAYABLE: &[&str] = &[
+    "open",
+    "reload",
+    "mouse.click",
+    "click",
+    "hover",
+    "type",
+    "insert-text",
+    "key.press",
+    "scroll",
+    "mouse.drag",
+    "screenshot",
+    "wait",
+];
+
+/// True if `action_type` can be dispatched by [`dispatch_replay_action`].
+fn is_replayable(action_type: &str) -> bool {
+    REPLAYABLE.contains(&action_type)
 }
 
 /// Replay a recorded action sequence against a fresh session.
@@ -140,18 +178,23 @@ pub async fn replay(session: &Session, run_dir: &Path) -> Result<ReplayResult, B
             params,
         } = entry;
 
-        // Skip non-replayable action types.
-        if matches!(
-            action_type.as_str(),
-            "browser.close" | "" | "trace.start" | "trace.stop"
-        ) {
+        // Skip non-replayable action types. An action type we do not know how
+        // to dispatch is reported as *skipped*, never as a silent success:
+        // counting an un-executed action as succeeded is how a typo in the
+        // dispatch table could hide a completely broken replay.
+        if !is_replayable(&action_type) {
             skipped += 1;
+            let note = if KNOWN_UNREPLAYABLE.contains(&action_type.as_str()) {
+                "skipped (not replayable)".to_string()
+            } else {
+                format!("skipped (unknown action type '{action_type}')")
+            };
             steps.push(ReplayStep {
                 sequence,
                 action_type,
                 success: true,
                 error: None,
-                note: Some("skipped (not replayable)".into()),
+                note: Some(note),
             });
             continue;
         }
@@ -245,7 +288,9 @@ async fn dispatch_replay_action(
             session.open(url).await
         }
         "reload" => session.reload().await,
-        "click" => {
+        // `Session::record_action` writes "mouse.click"; "click" is accepted as
+        // an alias for hand-written traces.
+        "mouse.click" | "click" => {
             let target = replay_target(params)?;
             let button = replay_button(params);
             let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
@@ -437,6 +482,38 @@ mod tests {
         let p = replay_point(&serde_json::json!({"from": [10, 20]}), "from").unwrap();
         assert_eq!(p.x, 10.0);
         assert_eq!(p.y, 20.0);
+    }
+
+    /// Regression: `Session::record_action` writes `mouse.click`, and replay
+    /// used to match only `"click"`. Every recorded click fell through to the
+    /// catch-all arm, was never executed, and was still counted as a success.
+    #[test]
+    fn recorded_action_names_are_all_replayable() {
+        // Exactly the `kind` strings Session::record_action emits.
+        for kind in [
+            "open",
+            "reload",
+            "mouse.click",
+            "hover",
+            "type",
+            "insert-text",
+            "key.press",
+            "screenshot",
+            "scroll",
+            "mouse.drag",
+            "wait",
+        ] {
+            assert!(
+                is_replayable(kind),
+                "recorded action '{kind}' is not in REPLAYABLE; replay would skip it"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_action_is_not_replayable() {
+        assert!(!is_replayable("mouse.click.typo"));
+        assert!(!is_replayable("browser.close"));
     }
 
     #[test]

@@ -6,6 +6,80 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed — correctness
+
+- **Replay silently skipped every click.** `Session::record_action` writes the
+  action type `mouse.click`, but the replay dispatch table matched `"click"`.
+  Recorded clicks fell through to the catch-all arm, were never executed, and
+  were still counted as successes — a replay of a click-driven trace reported
+  `all_succeeded: true` without clicking anything. Replay now accepts the
+  recorded name, and an action type it does not know how to dispatch is
+  reported as **skipped** rather than as a silent success.
+- **Network requests never recorded completion.** `Network.responseReceived`
+  moved the request straight into the history, so `pending()` dropped to zero
+  the moment response headers arrived (while the body was still streaming) and
+  the later `loadingFinished` found nothing to update. `finished` stayed
+  `false` and `duration_ms` stayed `None` for every successful request.
+  Requests now stay in flight until `loadingFinished`/`loadingFailed`, and
+  `duration_ms` is measured locally instead of from CDP's monotonic
+  `timestamp` (which was being reported as a duration).
+- **Element screenshots captured the wrong region on a scrolled page.**
+  `getBoundingClientRect()` is viewport-relative but `Page.captureScreenshot`'s
+  `clip` is document-relative; the scroll offset is now added. For a `@eN`
+  target the referenced element's own box is used — resolving via
+  `elementFromPoint` returned the topmost descendant, clipping to an inner
+  element instead of the referenced one.
+- **`reload` was a re-navigation**, not a reload: it read the current URL and
+  called `Page.navigate`, dropping the history entry's POST body. It now issues
+  `Page.reload` and waits for the document to actually swap.
+
+### Fixed — security
+
+- **Agent-supplied file paths are now validated.** `util::validate_path_within`
+  existed but was never called, while the README and `docs/security.md` claimed
+  traversal was rejected. `trace.start` (`base`) and `replay` (`runDir`) take
+  paths straight from the agent; both are now confined to the working
+  directory. Operator-supplied CLI paths are deliberately unaffected.
+- **Host policy no longer ignores hostless URLs.** `file:`, `data:`,
+  `javascript:` and `chrome:` URLs have no host, so every allow/deny pattern
+  missed them — `--deny-host` alone did not stop `file:///etc/passwd`. Once any
+  host policy is configured, navigation is restricted to `http`/`https` (plus
+  `about:blank`). With no policy configured the default stays permissive.
+- **Site isolation is no longer disabled.** `IsolateOrigins` and
+  `site-per-process` were in `--disable-features`; only `Translate` is now.
+- **Viewer exposure is documented and warned about.** `--viewer-host` (added
+  in an earlier change) can bind the unauthenticated MJPEG stream to all
+  interfaces while the module doc still claimed loopback-only. The contradiction
+  is resolved, `README.md` and `docs/security.md` describe the exposure, and a
+  warning is printed whenever the bind address is not loopback.
+- Report HTML now escapes quotes and the action-type field.
+
+### Fixed — robustness
+
+- Browser cleanup took the child-process lock with `try_lock` and silently
+  skipped the kill on contention, leaking the process and its temp profile.
+- `CdpClient::subscribe_events` and `Session::with_policy` used
+  `Mutex::blocking_lock`, which panics inside a tokio runtime. Both are removed
+  in favor of the existing `_async` variants.
+- Xvfb picked a display number at random without checking whether one was in
+  use, and cleaned up with `pkill -f "Xvfb :N"`, which could kill an unrelated
+  X server. It now picks a free display and kills by pid.
+- An invalid `--viewer-host` panicked instead of returning an error, and the
+  viewer replied `HTTP/1.0 404 OK`.
+- The viewer read the HTTP request with a single `read`, so a request split
+  across TCP segments was routed to 404.
+- `Screencast` now stops on drop instead of leaving Chrome encoding frames.
+
+### Changed
+
+- `wait` polls with one `Runtime.evaluate` per iteration instead of three.
+- `CdpClient::call` and `call_session` share one implementation.
+- Secret-key detection matches word segments instead of raw substrings, so
+  `author`, `monkey` and `keyboard` are no longer redacted.
+- Network history uses a `VecDeque` (O(1) trim instead of O(n)).
+- Removed `Session::ensure_network_tracker`, a no-op that always returned `Ok`.
+- Test fixture server answers 404 for missing fixtures instead of 200.
+
 ### Added — replay engine
 - **Replay engine** (`src/trace/replay.rs`): reads a recorded `actions.jsonl`
   and re-executes each action (`open`, `click`, `type`, `insert-text`,

@@ -100,11 +100,17 @@ async fn serve(listener: TcpListener, root: PathBuf) {
                 } else {
                     root.join(&path)
                 };
-                let body = match std::fs::read(&file_path) {
-                    Ok(b) => b,
-                    Err(_) => b"Not Found".to_vec(),
-                };
-                ("HTTP/1.1 200 OK".to_string(), body, mime_for(&file_path))
+                // A missing fixture must answer 404. Returning 200 with a
+                // "Not Found" body made it impossible to test error handling,
+                // and hid fixture typos behind a successful-looking response.
+                match std::fs::read(&file_path) {
+                    Ok(b) => ("HTTP/1.1 200 OK".to_string(), b, mime_for(&file_path)),
+                    Err(_) => (
+                        "HTTP/1.1 404 Not Found".to_string(),
+                        b"Not Found".to_vec(),
+                        "text/plain",
+                    ),
+                }
             };
             let resp = format!(
                 "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

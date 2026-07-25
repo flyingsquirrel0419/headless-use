@@ -150,6 +150,67 @@ impl Page {
         Ok(())
     }
 
+    /// Reload the current page via CDP `Page.reload` and wait for load.
+    ///
+    /// Unlike navigating to the current URL again, this preserves the history
+    /// entry — including a POST body — which is what a user pressing reload
+    /// gets.
+    pub async fn reload(&self) -> Result<(), BrowserError> {
+        self.enable("Page.enable", None).await?;
+        // Stamp the *current* document. `wait_load` only polls
+        // `document.readyState`, and the outgoing document is already
+        // "complete" — so without a marker the wait would return instantly and
+        // the caller would observe the pre-reload page. The marker does not
+        // survive the document swap, so its absence proves the new document is
+        // in place.
+        let _ = self.evaluate("window.__hu_reload_marker__ = 1").await;
+        self.call::<Value>(
+            "Page.reload",
+            Some(json!({ "ignoreCache": false })),
+            Duration::from_secs(30),
+        )
+        .await?;
+        self.wait_document_swapped("__hu_reload_marker__", Duration::from_secs(30))
+            .await?;
+        self.wait_load(Duration::from_secs(30)).await?;
+        let final_url = self.url().await.unwrap_or_default();
+        if final_url.starts_with("chrome-error://") {
+            return Err(BrowserError::Other(format!(
+                "reload resulted in a Chrome error page ({final_url})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Wait until a marker previously set on `window` is gone, i.e. the
+    /// document has been replaced. Used to make reload waits honest.
+    async fn wait_document_swapped(
+        &self,
+        marker: &str,
+        timeout: Duration,
+    ) -> Result<(), BrowserError> {
+        let deadline = std::time::Instant::now() + timeout;
+        let expr = format!("!!window.{marker}");
+        loop {
+            let still_there = self
+                .evaluate(&expr)
+                .await
+                .ok()
+                .and_then(|r| r.value().and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            if !still_there {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(BrowserError::Timeout {
+                    operation: "Page.reload".into(),
+                    timeout_ms: timeout.as_millis() as u64,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// Wait for `Page.loadEventFired` (or timeout).
     pub async fn wait_load(&self, timeout: Duration) -> Result<(), BrowserError> {
         // Poll document.readyState via Runtime.evaluate as a robust fallback.

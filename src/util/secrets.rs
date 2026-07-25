@@ -42,21 +42,60 @@ pub fn mask_secret(s: &str) -> String {
 }
 
 /// True if a key name looks like it holds a secret.
+///
+/// Matching is on word segments, not raw substrings. A plain `contains` check
+/// flagged `author` (contains "auth"), `monkey` and `keyboard` (contain "key"),
+/// which is noise in traces and URLs. Splitting on the usual key separators
+/// (`_ - . space` and camelCase boundaries) keeps `api_key`, `X-Auth-Token`
+/// and `accessToken` matching while leaving ordinary words alone.
 pub fn is_secret_key(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    const SUFFIXES: &[&str] = &[
+    const SECRET_WORDS: &[&str] = &[
         "key",
+        "keys",
         "secret",
+        "secrets",
         "token",
         "password",
         "passwd",
         "pwd",
         "auth",
         "credential",
+        "credentials",
         "apikey",
-        "api_key",
+        "authorization",
+        "session",
+        "signature",
     ];
-    SUFFIXES.iter().any(|suf| k.contains(suf))
+    key_segments(key)
+        .iter()
+        .any(|seg| SECRET_WORDS.contains(&seg.as_str()))
+}
+
+/// Split a key name into lowercase word segments on separators and camelCase
+/// boundaries: `X-Auth-Token` -> ["x", "auth", "token"], `accessToken` ->
+/// ["access", "token"].
+fn key_segments(key: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for c in key.chars() {
+        if c == '_' || c == '-' || c == '.' || c == ' ' || c == '[' || c == ']' {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && prev_lower && !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+        }
+        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        current.push(c.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
 }
 
 /// Mask a JSON value recursively (redact sensitive header values, etc.).
@@ -121,10 +160,31 @@ mod tests {
     #[test]
     fn is_secret_key_detects_common() {
         assert!(is_secret_key("api_key"));
+        assert!(is_secret_key("apiKey"));
         assert!(is_secret_key("X-Auth-Token"));
         assert!(is_secret_key("PASSWORD"));
+        assert!(is_secret_key("access_token"));
+        assert!(is_secret_key("accessToken"));
+        assert!(is_secret_key("authorization"));
         assert!(!is_secret_key("username"));
         assert!(!is_secret_key("url"));
+    }
+
+    /// Word-segment matching, not substring: these all contain a secret word
+    /// but are not secrets.
+    #[test]
+    fn is_secret_key_ignores_words_that_merely_contain_a_secret_word() {
+        for k in [
+            "author",
+            "authors",
+            "monkey",
+            "keyboard",
+            "tokenizer",
+            "passwordless_hint_text",
+            "keynote",
+        ] {
+            assert!(!is_secret_key(k), "'{k}' should not be treated as a secret");
+        }
     }
 }
 

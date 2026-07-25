@@ -106,11 +106,16 @@ pub async fn wait_until_stable(
     let mut last_mut_ts = baseline_mut;
 
     while start.elapsed() < opts.timeout {
-        // Read readyState and last mutation timestamp.
+        // One round trip per poll: readyState, the last mutation timestamp and
+        // the page's clock all come back together. Reading `Date.now()` in a
+        // second `Runtime.evaluate` (as this used to) tripled the CDP traffic
+        // of the poll loop and compared two clock samples taken milliseconds
+        // apart.
         let state_expr = r#"(() => {
           return JSON.stringify({
             ready: document.readyState,
             lastMut: window.__hu_last_mut__ || 0,
+            now: Date.now(),
           });
         })()"#;
         let v = page.evaluate(state_expr).await?;
@@ -118,6 +123,7 @@ pub async fn wait_until_stable(
         let obj: Value = serde_json::from_str(s).unwrap_or(Value::Object(Default::default()));
         let ready = obj.get("ready").and_then(|r| r.as_str()).unwrap_or("");
         let mut_ts = obj.get("lastMut").and_then(|m| m.as_f64()).unwrap_or(0.0);
+        let now_js = obj.get("now").and_then(|m| m.as_f64()).unwrap_or(0.0);
 
         if mut_ts != last_mut_ts {
             last_mut_ts = mut_ts;
@@ -133,12 +139,6 @@ pub async fn wait_until_stable(
         let net_idle = pending == 0 && idle >= opts.network_idle;
 
         // DOM idle: time since the last mutation.
-        let now_js = page
-            .evaluate("Date.now()")
-            .await?
-            .value()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
         let ms_since_mut = if now_js > last_mut_ts {
             now_js - last_mut_ts
         } else {

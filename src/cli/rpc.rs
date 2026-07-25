@@ -109,18 +109,17 @@ pub async fn dispatch(
             // > 0 the cursor eases along a slight curve instead of snapping,
             // which looks natural in the live viewer. When omitted (0), it
             // falls back to the instant move_to for backward compatibility.
-            let duration_ms = params
-                .get("duration")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let duration_ms = params.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
             if duration_ms > 0 {
-                let steps = params
-                    .get("steps")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30) as u32;
+                let steps = params.get("steps").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
                 session
                     .mouse()
-                    .move_smooth(p, Modifiers::NONE, Duration::from_millis(duration_ms), steps)
+                    .move_smooth(
+                        p,
+                        Modifiers::NONE,
+                        Duration::from_millis(duration_ms),
+                        steps,
+                    )
                     .await?;
             } else {
                 session.mouse().move_to(p, Modifiers::NONE).await?;
@@ -292,11 +291,10 @@ pub async fn dispatch(
         "url" => Ok(json!({ "url": session.page().url().await? })),
         "title" => Ok(json!({ "title": session.page().title().await? })),
         "trace.start" => {
-            let base = params
-                .get("base")
-                .and_then(|v| v.as_str())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let base = match params.get("base").and_then(|v| v.as_str()) {
+                Some(b) => agent_path(b)?,
+                None => working_dir()?,
+            };
             let dir = session.trace_start(&base).await?;
             Ok(json!({ "traceDir": dir, "started": true }))
         }
@@ -311,8 +309,8 @@ pub async fn dispatch(
                 .ok_or_else(|| {
                     crate::browser::BrowserError::InvalidInput("missing 'runDir'".into())
                 })?;
-            let result =
-                crate::trace::replay::replay(session, std::path::Path::new(run_dir)).await?;
+            let run_dir = agent_path(run_dir)?;
+            let result = crate::trace::replay::replay(session, &run_dir).await?;
             Ok(json!(result))
         }
         "browser.close" => {
@@ -323,6 +321,26 @@ pub async fn dispatch(
             "unknown method '{method}'"
         ))),
     }
+}
+
+/// The process working directory, which bounds every agent-supplied path.
+fn working_dir() -> Result<std::path::PathBuf, crate::browser::BrowserError> {
+    std::env::current_dir()
+        .map_err(|e| crate::browser::BrowserError::Other(format!("cannot read working dir: {e}")))
+}
+
+/// Resolve a path supplied by the *agent* (over JSON-RPC/MCP), rejecting `..`
+/// traversal and anything outside the working directory.
+///
+/// ## Why
+/// Methods like `trace.start` and `replay` take a path straight from the
+/// caller. The caller is a model that may be steered by page content, so an
+/// unbounded path is a write/read primitive pointed at the whole filesystem.
+/// Operator-supplied CLI paths are deliberately not routed through here.
+fn agent_path(target: &str) -> Result<std::path::PathBuf, crate::browser::BrowserError> {
+    let base = working_dir()?;
+    crate::util::validate_path_within(&base, target)
+        .map_err(crate::browser::BrowserError::InvalidInput)
 }
 
 fn resolve_target(

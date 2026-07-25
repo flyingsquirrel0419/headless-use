@@ -144,7 +144,8 @@ async fn generate_report(dir: &Path) -> Result<String, std::io::Error> {
             String::new()
         };
         rows.push_str(&format!(
-            r#"<tr><td>{seq}</td><td>{ts}</td><td><code>{atype}</code></td><td><pre>{}</pre>{img_html}</td></tr>"#,
+            r#"<tr><td>{seq}</td><td>{ts}</td><td><code>{}</code></td><td><pre>{}</pre>{img_html}</td></tr>"#,
+            html_escape(atype),
             html_escape(&params_str)
         ));
     }
@@ -171,10 +172,17 @@ code {{ background: #eef; padding: 1px 4px; border-radius: 3px; }}
     Ok(html)
 }
 
+/// Escape text for interpolation into the report HTML.
+///
+/// Quotes are escaped too. Report content originates from `actions.jsonl`, and
+/// `replay` accepts a run directory chosen by the caller, so the file is not
+/// necessarily one we wrote — it is treated as untrusted input.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn short_id() -> String {

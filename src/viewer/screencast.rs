@@ -216,6 +216,27 @@ impl Screencast {
         self.latest_tx.borrow().clone()
     }
 
+    /// Stop the screencast without awaiting the response.
+    ///
+    /// Used by [`Drop`], which cannot await. Prefer [`Self::stop`] where you
+    /// can observe the result.
+    fn stop_detached(&self) {
+        let client = self.client.clone();
+        let session_id = self.session_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = client
+                    .call_session::<Value>(
+                        "Page.stopScreencast",
+                        None,
+                        &session_id,
+                        Duration::from_secs(5),
+                    )
+                    .await;
+            });
+        }
+    }
+
     /// Stop the screencast.
     pub async fn stop(&self) -> Result<(), BrowserError> {
         self.client
@@ -228,6 +249,14 @@ impl Screencast {
             .await
             .map_err(BrowserError::from)?;
         Ok(())
+    }
+}
+
+impl Drop for Screencast {
+    /// Best-effort stop, so a dropped handle does not leave Chrome encoding and
+    /// emitting JPEG frames for a stream nobody reads.
+    fn drop(&mut self) {
+        self.stop_detached();
     }
 }
 

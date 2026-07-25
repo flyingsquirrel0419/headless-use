@@ -86,6 +86,24 @@ async fn replay_reproduces_recorded_actions() {
         "expected at least 5 replayed steps, got {}: {result:?}",
         result.replayed
     );
+    // Regression: the recorded click is `mouse.click`; replay used to match
+    // only `"click"`, so the click fell through to the catch-all arm, was never
+    // executed, and still counted as a success. Assert it was really dispatched
+    // and that nothing was quietly dropped as an unknown action type.
+    assert!(
+        result
+            .steps
+            .iter()
+            .any(|s| s.action_type == "mouse.click" && s.success && s.note.is_none()),
+        "the recorded click must be replayed, not skipped: {result:?}"
+    );
+    assert!(
+        !result
+            .steps
+            .iter()
+            .any(|s| s.note.as_deref().unwrap_or("").contains("unknown action")),
+        "no recorded action should be unknown to replay: {result:?}"
+    );
     let _ = std::fs::remove_dir_all(&run_dir);
 }
 

@@ -147,14 +147,12 @@ impl CdpClient {
     /// fanned out to all of them. This lets the Network tracker, the
     /// `Page.frameNavigated` generation listener, and any other subsystem
     /// receive events at the same time.
-    pub fn subscribe_events(&self) -> mpsc::UnboundedReceiver<CdpEvent> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.inner.subscribers.blocking_lock().push(tx);
-        rx
-    }
-
-    /// Async version of [`subscribe_events`]. Safe to call from async context.
+    ///
     /// Each call registers a new subscriber without disturbing existing ones.
+    ///
+    /// There is no blocking variant: an earlier `subscribe_events` used
+    /// `Mutex::blocking_lock`, which panics when called from inside a tokio
+    /// runtime — i.e. from every real caller in this codebase.
     pub async fn subscribe_events_async(&self) -> mpsc::UnboundedReceiver<CdpEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.inner.subscribers.lock().await.push(tx);
@@ -171,16 +169,31 @@ impl CdpClient {
         params: Option<Value>,
         timeout: Duration,
     ) -> Result<T, CdpError> {
+        self.call_inner(method, params, None, timeout).await
+    }
+
+    /// The single request/response implementation behind [`Self::call`] and
+    /// [`Self::call_session`]; `session_id` selects CDP flatten mode.
+    async fn call_inner<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<T, CdpError> {
         let id = {
             let mut g = self.inner.next_id.lock().await;
             *g += 1;
             *g
         };
-        let req = serde_json::json!({
+        let mut req = serde_json::json!({
             "id": id,
             "method": method,
             "params": params.unwrap_or(Value::Object(Default::default())),
         });
+        if let Some(sid) = session_id {
+            req["sessionId"] = Value::String(sid.to_string());
+        }
         let text = serde_json::to_string(&req)
             .map_err(|e| CdpError::Transport(format!("serialize request: {e}")))?;
 
@@ -359,57 +372,7 @@ impl CdpClient {
         session_id: &str,
         timeout_dur: Duration,
     ) -> Result<T, CdpError> {
-        let id = {
-            let mut g = self.inner.next_id.lock().await;
-            *g += 1;
-            *g
-        };
-        let req = serde_json::json!({
-            "id": id,
-            "method": method,
-            "sessionId": session_id,
-            "params": params.unwrap_or(Value::Object(Default::default())),
-        });
-        let text = serde_json::to_string(&req)
-            .map_err(|e| CdpError::Transport(format!("serialize request: {e}")))?;
-
-        let (tx, rx) = oneshot::channel();
-        self.inner.pending.lock().await.insert(id, tx);
-
-        let inner = self.inner.clone();
-        let method_owned = method.to_string();
-        let timeout_fut = tokio::time::sleep(timeout_dur);
-
-        let send_result = {
-            let w = self.write.lock().await;
-            w.send(Message::Text(text))
-        };
-        if let Err(e) = send_result {
-            inner.pending.lock().await.remove(&id);
-            return Err(CdpError::Transport(format!("send: {e}")));
-        }
-
-        tokio::pin!(timeout_fut);
-        let result = tokio::select! {
-            biased;
-            _ = &mut timeout_fut => {
-                inner.pending.lock().await.remove(&id);
-                return Err(CdpError::Timeout {
-                    operation: method_owned.clone(),
-                    timeout_ms: timeout_dur.as_millis() as u64,
-                });
-            }
-            res = rx => match res {
-                Ok(Ok(val)) => Ok(val),
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(CdpError::Transport("response channel dropped".into())),
-            },
-        };
-
-        let val = result?;
-        serde_json::from_value::<T>(val).map_err(|source| CdpError::Deserialize {
-            method: method_owned,
-            source,
-        })
+        self.call_inner(method, params, Some(session_id), timeout_dur)
+            .await
     }
 }

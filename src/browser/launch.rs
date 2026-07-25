@@ -130,12 +130,19 @@ fn which(name: &str) -> Option<PathBuf> {
 
 /// A spawned browser process + its temp resources.
 pub struct BrowserProcess {
-    child: tokio::sync::Mutex<Option<Child>>,
+    /// A `std::sync::Mutex`, not a tokio one, because every operation on the
+    /// child (`try_wait`, `start_kill`) is synchronous and the guard is never
+    /// held across an await. That lets cleanup take the lock unconditionally
+    /// instead of `try_lock`-ing it: the old code silently skipped the kill on
+    /// contention, leaking the browser process and its temp profile.
+    child: std::sync::Mutex<Option<Child>>,
     exe: PathBuf,
     port: u16,
     temp_dir: Option<PathBuf>,
     owns_temp: bool,
     xvfb_display: Option<String>,
+    /// PID of the Xvfb server we started, so cleanup kills exactly that one.
+    xvfb_pid: Option<u32>,
 }
 
 impl BrowserProcess {
@@ -163,9 +170,12 @@ impl BrowserProcess {
         };
 
         // Xvfb handling.
-        let xvfb_display = match opts.compat {
-            CompatMode::Xvfb => Some(start_xvfb().await?),
-            CompatMode::Chromium => None,
+        let (xvfb_display, xvfb_pid) = match opts.compat {
+            CompatMode::Xvfb => {
+                let (d, pid) = start_xvfb().await?;
+                (Some(d), Some(pid))
+            }
+            CompatMode::Chromium => (None, None),
         };
         let mut display_env = Vec::new();
         if let Some(d) = &xvfb_display {
@@ -192,7 +202,13 @@ impl BrowserProcess {
         args.push("--disable-sync".into());
         args.push("--metrics-recording-only".into());
         args.push("--disable-component-update".into());
-        args.push("--disable-features=Translate,IsolateOrigins,site-per-process".into());
+        // Only Translate is disabled here. `IsolateOrigins` and
+        // `site-per-process` used to be in this list; turning them off disables
+        // Chrome's site isolation, which is the main defense between a page and
+        // the rest of the browser — a bad trade on a browser an agent points at
+        // arbitrary URLs. Site isolation costs memory, not correctness, so it
+        // stays on.
+        args.push("--disable-features=Translate".into());
         args.push("--font-render-hinting=none".into());
         args.push("--hide-scrollbars".into());
         // Graphics: software GL to avoid GPU in headless servers.
@@ -242,12 +258,13 @@ impl BrowserProcess {
             .map_err(|e| BrowserError::LaunchFailed(format!("spawn {exe:?}: {e}")))?;
 
         let proc = Self {
-            child: tokio::sync::Mutex::new(Some(child)),
+            child: std::sync::Mutex::new(Some(child)),
             exe,
             port,
             temp_dir: Some(temp_dir),
             owns_temp,
             xvfb_display,
+            xvfb_pid,
         };
 
         // Wait for CDP HTTP to be ready.
@@ -304,9 +321,10 @@ impl BrowserProcess {
                     "CDP endpoint {url} not ready within 30s"
                 )));
             }
-            // Bail early if the process died.
+            // Bail early if the process died. The guard is scoped so it is
+            // never held across the await below.
             {
-                let mut g = self.child.lock().await;
+                let mut g = self.child.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(child) = g.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
                         return Err(BrowserError::LaunchFailed(format!(
@@ -330,7 +348,7 @@ impl BrowserProcess {
         // out of the mutex and reap it on a short-lived blocking thread so we don't
         // block the Drop context (which may run inside a tokio runtime) and so we
         // avoid zombies.
-        let taken = self.child.try_lock().ok().and_then(|mut g| g.take());
+        let taken = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(mut child) = taken {
             let _ = child.start_kill();
             // Reap on a dedicated thread; the join is bounded by a tiny timeout.
@@ -353,10 +371,11 @@ impl BrowserProcess {
                 let _ = std::fs::remove_dir_all(d);
             }
         }
-        if let Some(disp) = &self.xvfb_display {
-            // Xvfb is left to its own process group; best-effort kill by display.
-            let _ = std::process::Command::new("pkill")
-                .args(["-f", &format!("Xvfb {disp}")])
+        if let Some(pid) = self.xvfb_pid {
+            // Kill by pid, not `pkill -f "Xvfb :N"` — the pattern match would
+            // also take down an Xvfb started by someone else on the same host.
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
                 .output();
         }
     }
@@ -375,11 +394,30 @@ fn pick_free_port() -> Option<u16> {
         .and_then(|l| l.local_addr().ok().map(|a| a.port()))
 }
 
+/// Pick a display number no X server is currently using.
+///
+/// An X server on display `:N` holds `/tmp/.X11-unix/XN` and `/tmp/.X<N>-lock`.
+/// Picking at random without checking (the previous behavior) could collide
+/// with an existing server — including one started by another `headless-use`
+/// session — and the Xvfb spawn would fail silently.
+fn pick_free_display() -> Option<u16> {
+    for _ in 0..64 {
+        let n = fastrand::u16(20..200);
+        let socket = std::path::Path::new("/tmp/.X11-unix").join(format!("X{n}"));
+        let lock = std::path::PathBuf::from(format!("/tmp/.X{n}-lock"));
+        if !socket.exists() && !lock.exists() {
+            return Some(n);
+        }
+    }
+    None
+}
+
 /// Start an Xvfb display on a free display number and return `:N`.
-async fn start_xvfb() -> Result<String, BrowserError> {
-    let n = fastrand::u16(20..200);
+async fn start_xvfb() -> Result<(String, u32), BrowserError> {
+    let n = pick_free_display()
+        .ok_or_else(|| BrowserError::LaunchFailed("no free X display number".into()))?;
     let display = format!(":{n}");
-    let _ = Command::new("Xvfb")
+    let child = Command::new("Xvfb")
         .args([
             display.clone(),
             "-screen".to_string(),
@@ -391,6 +429,12 @@ async fn start_xvfb() -> Result<String, BrowserError> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| BrowserError::LaunchFailed(format!("Xvfb spawn: {e}")))?;
+    // Keep the pid so cleanup can kill exactly this server. The old cleanup
+    // ran `pkill -f "Xvfb :N"`, which would also kill an unrelated Xvfb that
+    // happened to share the display string.
+    let pid = child
+        .id()
+        .ok_or_else(|| BrowserError::LaunchFailed("Xvfb exited immediately".into()))?;
     // Give Xvfb a moment to start.
     tokio::time::sleep(Duration::from_millis(300)).await;
     // Return the bare `:N` form. `localhost:N` makes the X client use an
@@ -398,7 +442,7 @@ async fn start_xvfb() -> Result<String, BrowserError> {
     // servers, causing "browser exited early". The bare display number (e.g.
     // `:99`) uses the standard X11 unix socket and matches a manual
     // `DISPLAY=:99 google-chrome` invocation.
-    Ok(display)
+    Ok((display, pid))
 }
 
 /// Short random id for temp dir names (no uuid dep at call site).
@@ -436,6 +480,11 @@ impl BrowserProcess {
     /// The CDP port (for display).
     pub fn port_for_display(&self) -> u16 {
         self.port
+    }
+
+    /// The Xvfb display this process runs on (`:N`), if `--compat xvfb`.
+    pub fn xvfb_display(&self) -> Option<&str> {
+        self.xvfb_display.as_deref()
     }
 }
 
