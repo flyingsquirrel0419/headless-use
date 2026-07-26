@@ -84,6 +84,37 @@ async fn rejected_click_reports_zero_effects() {
     s.shutdown().await;
 }
 
+/// An id-less div promoted by the listener pass has an empty selectorHint;
+/// ref re-resolution must fall back to tag+name+geometry instead of failing
+/// as stale.
+#[tokio::test]
+async fn idless_promoted_div_is_clickable_via_ref() {
+    let (_profile, s, srv) = session().await;
+    s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    let noid = obs
+        .elements
+        .iter()
+        .find(|e| e.tag_name == "div" && e.name == "no-id button")
+        .expect("id-less listener div promoted by observe");
+    assert!(
+        noid.selector_hint.is_empty(),
+        "fixture element must have no id (that is the point of this test)"
+    );
+    let target = headless_use::session::Session::click_target_from_ref(&noid.ref_token).unwrap();
+    let report = s
+        .click(target, MouseButton::Left, 1, Modifiers::NONE, Duration::ZERO)
+        .await
+        .expect("ref click on id-less promoted div must resolve, not go stale");
+    let effects = report.effects.expect("default window is on");
+    assert!(
+        effects.dom_mutations > 0,
+        "listener updates #status: the click must land on the div: {effects:?}"
+    );
+    s.shutdown().await;
+}
+
 #[tokio::test]
 async fn occluded_target_is_reported() {
     let (_profile, s, srv) = session().await;

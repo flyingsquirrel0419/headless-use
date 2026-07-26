@@ -60,7 +60,7 @@ impl Session {
             // - 선택한 방식: name과 동일하게 tag도 JSON 문자열로 인코딩하여 JS
             //   변수에 할당한 뒤 querySelectorAll에 전달.
             // - 장점: 임의의 CSS 선택자 문자에 안전, name과 일관된 패턴.
-            let tag_json = serde_json::to_string(tag).unwrap_or_else(|_| "\"*\"".into());
+            let tag_json = serde_json::to_string(&tag).unwrap_or_else(|_| "\"*\"".into());
             // [Decision Log] — 이름 중복 요소의 좌표 기반 판별
             // - 목적과 의도: 같은 이름을 가진 요소가 여러 개일 때 observe가 가리킨
             //   그 요소를 다시 찾는다.
@@ -127,14 +127,33 @@ return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height,candidates:pool.length}
 }
 
 /// Map a tag name to a query selector for name-based re-resolution.
-fn tag_for_query(tag: &str) -> &'static str {
+///
+/// For tags without a dedicated mapping (div, span, li, ...) the element's
+/// own tag is prepended to the generic fallback list. Without it, elements
+/// promoted by the listener-detection pass that have no id (`selectorHint`
+/// empty) could never be re-resolved — the fallback query only matched
+/// standard interactive tags, so every ref click on a promoted div failed
+/// as stale. The tag comes from the page (`el.tagName.toLowerCase()`), so
+/// it is validated before being spliced into a selector.
+fn tag_for_query(tag: &str) -> String {
+    const GENERIC: &str = "button, a[href], input, textarea, select, [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='tab'], summary";
     match tag {
-        "button" => "button, [role='button'], input[type='submit'], input[type='button']",
-        "a" => "a[href], [role='link']",
-        "input" => "input",
-        "textarea" => "textarea",
-        "select" => "select",
-        "summary" => "summary",
-        _ => "button, a[href], input, textarea, select, [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='tab'], summary",
+        "button" => "button, [role='button'], input[type='submit'], input[type='button']".into(),
+        "a" => "a[href], [role='link']".into(),
+        "input" => "input".into(),
+        "textarea" => "textarea".into(),
+        "select" => "select".into(),
+        "summary" => "summary".into(),
+        other => {
+            let is_valid_tag = !other.is_empty()
+                && other
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-');
+            if is_valid_tag {
+                format!("{other}, {GENERIC}")
+            } else {
+                GENERIC.into()
+            }
+        }
     }
 }

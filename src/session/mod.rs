@@ -575,10 +575,20 @@ impl Session {
         )
         .await;
 
+        // Walk the cursor over BEFORE capturing the effects baseline and hit
+        // test. Cursor travel can itself mutate the DOM (hover menus opening,
+        // tooltips, :hover class toggles); sampling the baseline first would
+        // count those en-route mutations as click effects, and the hit test
+        // would miss overlays that only exist once the cursor arrives.
+        // `Mouse::click` below skips its own move once the cursor is already
+        // at the target, so this does not double-dispatch.
+        self.travel_to((x, y).into(), modifiers).await?;
+
         // Effects need the MutationObserver; install is idempotent. Baseline
-        // and hit test both run before any mouse movement. Like the hit test,
-        // this is a diagnostic layer: a CDP failure here degrades to
-        // `effects: None` rather than aborting the click.
+        // and hit test run after cursor travel, immediately before the click
+        // dispatch. Like the hit test, this is a diagnostic layer: a CDP
+        // failure here degrades to `effects: None` rather than aborting the
+        // click.
         let sample_effects = !self.click_observe_window.is_zero();
         let baseline = if sample_effects {
             let installed = wait::install_mutation_observer(&self.page).await;
@@ -603,10 +613,6 @@ impl Session {
         };
         let hit = click_report::hit_test(&self.page, x, y, target_hint.as_deref()).await;
 
-        // Walk the cursor over first when smooth motion is on. `Mouse::click`
-        // skips its own move once the cursor is already at the target, so this
-        // does not double-dispatch.
-        self.travel_to((x, y).into(), modifiers).await?;
         self.mouse()
             .click((x, y).into(), button, count, modifiers, hold)
             .await?;

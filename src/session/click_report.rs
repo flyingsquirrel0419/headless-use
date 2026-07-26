@@ -69,7 +69,9 @@ pub(crate) async fn hit_test(
     target_hint: Option<&str>,
 ) -> Option<HitInfo> {
     let hint_js = match target_hint {
-        Some(h) => format!("{:?}", h), // JSON-escapes the selector string
+        // JSON-encode so any character in the selector is safe inside the JS
+        // source (same pattern as resolve.rs).
+        Some(h) => serde_json::to_string(h).unwrap_or_else(|_| "null".to_string()),
         None => "null".to_string(),
     };
     let expr = format!(
