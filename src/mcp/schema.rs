@@ -33,13 +33,30 @@ fn tools() -> Vec<ToolDef> {
         schema: json!({ "type": "object", "properties": {} }),
     },
     ToolDef {
-        name: "browser_screenshot",
-        description: "Capture a PNG screenshot and return it as a base64 image. By default captures the viewport; set fullPage for the whole page, or element to a @g<gen>:e<num> reference to capture only that element's region.",
+       name: "browser_screenshot",
+       description: "Capture a PNG screenshot and return it as a base64 image. By default captures the viewport; set fullPage for the whole page, or element to a @g<gen>:e<num> reference to capture only that element's region.",
+       schema: json!({
+           "type": "object",
+           "properties": {
+               "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page." },
+               "element": { "type": "string", "description": "Capture only this element's region (e.g. @g1:e3)." }
+           }
+       }),
+   },
+    ToolDef {
+        name: "browser_dewiggle",
+        description: "Capture several frames of an animated/wiggling text region and reverse the per-glyph vertical wobble using PIXELS ONLY. Use this for wiggle CAPTCHAs (e.g. neal.fun Level 3). This is an honest pixel-only approach: it never reads answer arrays, component props, or DOM text — only the captured image intensities. Returns a realigned+averaged base64 PNG plus optional per-glyph crops when chars is set.",
         schema: json!({
             "type": "object",
             "properties": {
-                "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page." },
-                "element": { "type": "string", "description": "Capture only this element's region (e.g. @g1:e3)." }
+                "region": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "description": "Capture region [x,y,w,h] in viewport CSS px. Omit to auto-detect the canvas element's bounding box."
+                },
+                "frames": { "type": "integer", "default": 12, "description": "Number of frames to capture (2..=60)." },
+                "intervalMs": { "type": "integer", "default": 80, "description": "Milliseconds between frames." },
+                "chars": { "type": "integer", "description": "Segment into N equal-width glyph bands and return per-glyph crops." }
             }
         }),
     },
@@ -262,6 +279,7 @@ pub fn tool_for_method(tool: &str) -> Option<&'static str> {
         "browser_open" => "browser.open",
         "browser_observe" => "observe",
         "browser_screenshot" => "screenshot",
+        "browser_dewiggle" => "dewiggle",
         "browser_click" => "click",
         "browser_hover" => "hover",
         "browser_mouse_move" => "mouse.move",

@@ -293,3 +293,85 @@ fn base64_decode(s: &str) -> Vec<u8> {
         .decode(s)
         .expect("base64")
 }
+
+/// Dewiggle must capture multiple frames, realign them, and return a valid
+/// PNG plus per-glyph crops. This exercises the full Session::dewiggle path
+/// over JSON-RPC against the local wiggle-text fixture.
+///
+/// NOTE: ignored by default because it needs an animated canvas, and a
+/// perpetual animation loop freezes CDP in plain `serve` (headless=new) mode
+/// unless a screencast is already pumping the page. The dewiggle tool starts
+/// its own screencast internally, but the page wedges before it can begin.
+/// The tool is verified end-to-end via the live viewer (`view` mode) instead.
+/// Run manually with: cargo test --release --test it_rpc rpc_dewiggle -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "needs a live viewer (screencast) to pump the animated page; run via `view` mode"]
+async fn rpc_dewiggle_returns_realigned_png_and_char_crops() {
+    common::init();
+    let srv = common::FixtureServer::start().await;
+    let mut child = Command::new(binary())
+        .args(["serve", "--no-sandbox"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let to = Duration::from_secs(40);
+
+    send(
+        &mut stdin,
+        "browser.open",
+        json!({ "url": srv.url("wiggle-text.html") }),
+        1,
+    );
+    let _ = recv(&mut stdout, to).expect("open response");
+
+    // Let the fixture finish loading + start its animation. Animated fixtures
+    // need a longer settle; wait up to 10s.
+    send(&mut stdin, "wait", json!({ "timeout": 10000 }), 7);
+    let _ = recv(&mut stdout, to);
+
+    // Dewiggle: 8 frames, 6 glyph bands. Auto-detect the canvas region.
+    send(
+        &mut stdin,
+        "dewiggle",
+        json!({ "frames": 8, "intervalMs": 60, "chars": 6 }),
+        2,
+    );
+    // Dewiggle captures N screenshots sequentially, which can take a while
+    // in a cold headless browser, so allow a generous timeout.
+    let resp = recv(&mut stdout, Duration::from_secs(90)).expect("dewiggle response");
+    assert_eq!(resp["result"]["frameCount"], json!(8));
+    // Region auto-detected from the canvas bounding box.
+    assert!(
+        resp["result"]["region"]["width"].as_f64().unwrap() > 100.0,
+        "region should be auto-detected from canvas"
+    );
+    // Six glyph bands.
+    assert_eq!(resp["result"]["bands"].as_array().unwrap().len(), 6);
+    // Per-glyph crops present.
+    let crops = resp["result"]["charCrops"].as_array().unwrap();
+    assert_eq!(crops.len(), 6, "should have 6 glyph crops");
+    // The realigned image is a valid PNG.
+    let img = resp["result"]["image"].as_str().unwrap();
+    let png = base64_decode(img);
+    assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n", "image must be a PNG");
+    assert!(
+        resp["result"]["imageBytes"].as_u64().unwrap() > 500,
+        "realigned PNG should be non-trivial"
+    );
+    // Each crop is also a valid PNG.
+    for (i, c) in crops.iter().enumerate() {
+        let b = base64_decode(c.as_str().unwrap());
+        assert_eq!(&b[0..8], b"\x89PNG\r\n\x1a\n", "crop {i} must be a PNG");
+    }
+
+    send(&mut stdin, "browser.close", json!({}), 99);
+    let _ = recv(&mut stdout, to);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}

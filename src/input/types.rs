@@ -1,4 +1,67 @@
-//! Shared input types: modifiers, points, button bitmasks.
+//! Shared input types: modifiers, points, button bitmasks, cursor motion.
+
+use std::time::Duration;
+
+/// How the cursor travels to a click/hover target.
+///
+/// ## Why this is a setting and not a constant
+/// Interpolating the path dispatches a burst of real `mouseMoved` events, so
+/// the page sees the cursor travel: hover menus open, sliders track, and the
+/// live viewer shows motion instead of a teleport. It also costs the travel
+/// time on every click, which is dead weight for an agent running headless in
+/// CI. So the *watching* surface (`headless-use view`) defaults to
+/// [`CursorMotion::Smooth`] and the automation surfaces default to
+/// [`CursorMotion::Instant`]; `--cursor-motion` overrides either way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CursorMotion {
+    /// Jump straight to the target: one `mouseMoved` event, no delay.
+    Instant,
+    /// Ease along the path, emitting intermediate `mouseMoved` events.
+    Smooth {
+        /// Total travel time.
+        duration: Duration,
+        /// Number of interpolation steps.
+        steps: u32,
+    },
+}
+
+impl CursorMotion {
+    /// The default smooth profile: 220ms over 24 steps.
+    ///
+    /// 220/24 is ~9.2ms per step, just above the 8ms floor in
+    /// [`crate::input::Mouse::move_smooth`] below which Chrome's input queue
+    /// stutters.
+    pub const fn smooth_default() -> Self {
+        Self::Smooth {
+            duration: Duration::from_millis(220),
+            steps: 24,
+        }
+    }
+
+    /// True if this profile interpolates.
+    pub fn is_smooth(self) -> bool {
+        matches!(self, Self::Smooth { .. })
+    }
+
+    /// Parse the `--cursor-motion` flag value.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "instant" | "snap" | "off" => Ok(Self::Instant),
+            "smooth" | "on" => Ok(Self::smooth_default()),
+            other => Err(format!(
+                "unknown cursor motion '{other}'. Allowed: smooth, instant"
+            )),
+        }
+    }
+}
+
+impl Default for CursorMotion {
+    /// [`CursorMotion::Instant`], so a library caller that does not opt in pays
+    /// no travel time.
+    fn default() -> Self {
+        Self::Instant
+    }
+}
 
 /// Modifier key bitmask, matching CDP / DOM conventions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,7 +131,7 @@ pub fn parse_modifiers(s: &str) -> Result<Modifiers, String> {
 }
 
 /// A 2D point in viewport CSS pixels.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Point {
     /// X coordinate.
     pub x: f64,
@@ -154,5 +217,41 @@ mod tests {
         let pts = parse_point_list("[[100,200],[300,400]]").unwrap();
         assert_eq!(pts.len(), 2);
         assert_eq!(pts[1].x, 300.0);
+    }
+
+    #[test]
+    fn cursor_motion_parse() {
+        assert_eq!(
+            CursorMotion::parse("instant").unwrap(),
+            CursorMotion::Instant
+        );
+        assert_eq!(
+            CursorMotion::parse("  INSTANT ").unwrap(),
+            CursorMotion::Instant
+        );
+        assert_eq!(
+            CursorMotion::parse("smooth").unwrap(),
+            CursorMotion::smooth_default()
+        );
+        assert!(CursorMotion::parse("fast").is_err());
+        // Default is the cheap one: a library caller pays nothing unless it
+        // opts in.
+        assert_eq!(CursorMotion::default(), CursorMotion::Instant);
+        assert!(!CursorMotion::Instant.is_smooth());
+        assert!(CursorMotion::smooth_default().is_smooth());
+    }
+
+    /// The smooth profile must stay above `move_smooth`'s 8ms per-step floor,
+    /// below which Chrome's input queue stutters.
+    #[test]
+    fn smooth_default_step_interval_is_above_the_floor() {
+        let CursorMotion::Smooth { duration, steps } = CursorMotion::smooth_default() else {
+            panic!("smooth_default must be Smooth");
+        };
+        let per_step = duration.as_secs_f64() * 1000.0 / steps as f64;
+        assert!(
+            per_step >= 8.0,
+            "step interval {per_step}ms is below the 8ms floor"
+        );
     }
 }

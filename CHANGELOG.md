@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — live viewer
+
+- **New cursor design.** The overlay is now a solid white pointer with a dark
+  outline and a soft drop shadow, at roughly OS cursor size (28px, down from
+  48px). The previous cyan arrow with a blurred glow halo covered a meaningful
+  part of whatever control was being clicked and read as decoration. Click
+  feedback is a single expanding ripple instead of a cyan ring held for the
+  whole press.
+- **The cursor travels to its target.** `Session` takes a `CursorMotion`
+  setting; `headless-use view` defaults to `smooth`, which eases the cursor
+  along the path and dispatches real intermediate `mouseMoved` events — visible
+  in the stream, and enough to open hover menus that require movement.
+  `serve`/`run`/`mcp` keep the previous instant jump, since travel time is dead
+  weight for headless automation. `--cursor-motion smooth|instant` overrides
+  either default.
+- `Mouse::click` no longer re-issues a move to a target the cursor already
+  occupies, which would otherwise add a phantom `mouseMoved` to the event
+  stream and to traces.
+- **Viewer page rebuilt.** The stream now fills the window and letterboxes via
+  `object-fit: contain` instead of overflowing the fold at 1280x720. The header
+  floats over the top edge, shows a live frame rate derived from the MJPEG load
+  events, distinguishes "idle" (a static page stops repainting) from
+  "stream ended", and fades out while you watch. No new server endpoints.
+- `cursor-overlay.js` moved from `tests/fixtures/` to `src/viewer/`. It ships
+  inside the binary via `include_str!`, so production code was reaching into
+  the test tree for an asset.
+
 ### Fixed — correctness
 
 - **Replay silently skipped every click.** `Session::record_action` writes the

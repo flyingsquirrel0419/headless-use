@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use crate::browser::{discover_browser, Browser, LaunchOptions};
-use crate::cli::{output, LaunchArgs, RunArgs, ViewArgs};
+use crate::cli::{output, DewiggleArgs, LaunchArgs, RunArgs, ViewArgs};
 use crate::observe::parse_ref;
 use crate::session::Session;
 
@@ -412,4 +412,104 @@ pub async fn install_browser() -> i32 {
     println!();
     println!("For Docker, see docker/Dockerfile which bundles the browser.");
     0
+}
+
+/// Run the `dewiggle` command: open a URL, capture an animated text region,
+/// and reverse per-glyph vertical wobble using pixels only. Saves the
+/// realigned PNG (and per-glyph crops when --chars is given).
+pub async fn dewiggle(args: DewiggleArgs) -> i32 {
+    let opts = match args.launch.to_launch_options() {
+        Ok(o) => o.with_no_sandbox_for_root(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
+    let session = match Session::start(opts).await {
+        Ok(s) => s.with_policy_async(policy).await,
+        Err(e) => return output::print_error(&e),
+    };
+    let result = run_dewiggle(&session, &args).await;
+    session.shutdown().await;
+    match result {
+        Ok(()) => 0,
+        Err(e) => output::print_error(&e),
+    }
+}
+
+async fn run_dewiggle(
+    session: &Session,
+    args: &DewiggleArgs,
+) -> Result<(), crate::browser::BrowserError> {
+    session.open(&args.url).await?;
+    session.wait(Default::default()).await?;
+
+    let region = match &args.region {
+        Some(s) => {
+            let parts: Vec<&str> = s.split(',').collect();
+            if parts.len() != 4 {
+                return Err(crate::browser::BrowserError::InvalidInput(format!(
+                    "region must be x,y,w,h (got '{s}')"
+                )));
+            }
+            let nums: Vec<f64> = parts
+                .iter()
+                .map(|p| {
+                    p.trim().parse::<f64>().map_err(|e| {
+                        crate::browser::BrowserError::InvalidInput(format!("region num: {e}"))
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            Some((nums[0], nums[1], nums[2], nums[3]))
+        }
+        None => None,
+    };
+
+    let out = session
+        .dewiggle(region, args.frames, args.interval, args.chars)
+        .await?;
+
+    // Decode the base64 PNG and write to the requested path.
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(&out.image)
+        .map_err(|e| crate::browser::BrowserError::Other(format!("base64 decode: {e}")))?;
+    crate::util::write_bytes(std::path::Path::new(&args.out), &png)
+        .map_err(crate::browser::BrowserError::Io)?;
+
+    if args.launch.json {
+        output::print_json(&json!({
+            "out": args.out,
+            "bytes": png.len(),
+            "frameCount": out.frame_count,
+            "region": out.region,
+            "bands": out.bands,
+            "charCrops": out.char_crops.len(),
+        }));
+    } else {
+        println!(
+            "Dewiggled image saved to {} ({} bytes, {} frames)",
+            args.out,
+            png.len(),
+            out.frame_count
+        );
+        if !out.char_crops.is_empty() {
+            // Save each glyph crop next to the main image.
+            let base = std::path::Path::new(&args.out);
+            let stem = base
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("dewiggle");
+            let dir = base.parent().unwrap_or(std::path::Path::new("."));
+            for (i, crop_b64) in out.char_crops.iter().enumerate() {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(crop_b64) {
+                    let p = dir.join(format!("{stem}_char{i}.png"));
+                    let _ = crate::util::write_bytes(&p, &bytes);
+                    println!("  glyph {i} -> {}", p.display());
+                }
+            }
+        }
+    }
+    Ok(())
 }

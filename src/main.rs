@@ -17,6 +17,7 @@ async fn main() {
         Command::Mcp(args) => headless_use::cli::commands::mcp(args).await,
         Command::Replay(args) => headless_use::cli::commands::replay(args).await,
         Command::View(args) => headless_use::cli::commands::view(args).await,
+        Command::Dewiggle(args) => headless_use::cli::commands::dewiggle(args).await,
     };
     std::process::exit(code)
 }

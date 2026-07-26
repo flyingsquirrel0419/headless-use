@@ -263,6 +263,99 @@ impl Page {
         })
     }
 
+    /// Evaluate a JS expression WITHOUT `awaitPromise`. Use this for
+    /// expressions that return a plain value (string/number/JSON), never a
+    /// Promise. On pages with a perpetual `requestAnimationFrame` loop (e.g.
+    /// animated CAPTCHA fixtures), `Runtime.evaluate` with `awaitPromise: true`
+    /// can hang because Chrome waits for the microtask queue to drain, which a
+    /// busy rAF loop keeps non-empty. Non-awaiting evaluation returns as soon as
+    /// the synchronous expression completes.
+    pub async fn evaluate_sync(
+        &self,
+        expression: &str,
+    ) -> Result<crate::cdp::EvaluateResult, BrowserError> {
+        self.call::<crate::cdp::EvaluateResult>(
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": expression,
+                "returnByValue": true,
+            })),
+            Duration::from_secs(15),
+        )
+        .await
+        .and_then(|r| {
+            if r.exception_details.is_some() {
+                Err(BrowserError::Other(format!(
+                    "Runtime.evaluate threw: {:?}",
+                    r.exception_details
+                )))
+            } else {
+                Ok(r)
+            }
+        })
+    }
+
+    /// Find the first element matching a CSS selector and return its viewport
+    /// bounding box (x, y, width, height) using the DOM domain (no JS
+    /// evaluation). Safe on pages with a perpetual rAF loop where
+    /// `Runtime.evaluate` can hang in headless mode.
+    pub async fn element_box_by_selector(
+        &self,
+        selector: &str,
+    ) -> Result<Option<(f64, f64, f64, f64)>, BrowserError> {
+        let doc: Value = self
+            .call::<Value>(
+                "DOM.getDocument",
+                Some(json!({"depth": 0})),
+                Duration::from_secs(10),
+            )
+            .await?;
+        let root_node_id = doc
+            .get("root")
+            .and_then(|r| r.get("nodeId"))
+            .and_then(|n| n.as_i64())
+            .ok_or_else(|| BrowserError::Other("DOM.getDocument: no root nodeId".into()))?;
+        let q: Value = self
+            .call::<Value>(
+                "DOM.querySelector",
+                Some(json!({ "nodeId": root_node_id, "selector": selector })),
+                Duration::from_secs(10),
+            )
+            .await?;
+        let node_id = q.get("nodeId").and_then(|n| n.as_i64()).unwrap_or(0);
+        if node_id == 0 {
+            return Ok(None);
+        }
+        let bm: Value = self
+            .call::<Value>(
+                "DOM.getBoxModel",
+                Some(json!({ "nodeId": node_id })),
+                Duration::from_secs(10),
+            )
+            .await?;
+        let quad = bm
+            .get("model")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array());
+        let Some(quad) = quad else {
+            return Ok(None);
+        };
+        if quad.len() < 8 {
+            return Ok(None);
+        }
+        let xs: Vec<f64> = (0..4)
+            .map(|i| quad[i * 2].as_f64().unwrap_or(0.0))
+            .collect();
+        let ys: Vec<f64> = (0..4)
+            .map(|i| quad[i * 2 + 1].as_f64().unwrap_or(0.0))
+            .collect();
+        let x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        Ok(Some((x, y, max_x - x, max_y - y)))
+    }
+
     /// Set the device metrics (viewport + scale factor).
     pub async fn set_viewport(&self, vp: Viewport) -> Result<(), BrowserError> {
         self.call::<Value>(
@@ -368,7 +461,7 @@ impl Page {
         Ok(())
     }
 
-    /// Inject the neon-arrow virtual cursor overlay into every new document.
+    /// Inject the virtual cursor overlay into every new document.
     ///
     /// [Decision Log]
     /// - 목적과 의도: Make the agent's CDP mouse visually observable on
@@ -385,7 +478,7 @@ impl Page {
     /// - 장점: Universal (works on any page), survives navigation, no input
     ///   coupling. 단점: Relies on CDP dispatching DOM pointer events.
     pub async fn inject_cursor_overlay(&self) -> Result<(), BrowserError> {
-        let source = include_str!("../../tests/fixtures/cursor-overlay.js");
+        let source = include_str!("../viewer/cursor-overlay.js");
         // Register for all future navigations so the overlay survives reloads
         // and SPA route changes (the script is idempotent via the
         // __hu_cursor_injected guard).

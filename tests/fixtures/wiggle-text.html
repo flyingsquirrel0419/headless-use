@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wiggle Text Fixture</title>
+<style>
+  body { margin:0; background:#fff; font-family:sans-serif; color:#222; }
+  .panel { margin:40px auto; width:460px; text-align:center; }
+  canvas { display:block; margin:0 auto; background:#f7f7f3; border:1px solid #ddd; }
+  input { width:320px; padding:8px; font-size:16px; }
+  button { padding:8px 16px; font-size:16px; }
+  #result { margin-top:10px; font-weight:bold; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h2>Level 3: Wiggles (fixture)</h2>
+  <p>Enter the text below</p>
+  <canvas id="cv" width="400" height="150"></canvas>
+  <p>
+    <input id="ans" type="text" placeholder="Answer">
+    <button id="submit">Submit</button>
+  </p>
+  <div id="result"></div>
+</div>
+<script>
+// The answer is fixed in the fixture source so tests can verify correctness.
+// The dewiggle tool itself never reads this; it only looks at pixels.
+const ANSWER = "FNZZSD";
+document.getElementById('result').dataset.answer = ANSWER;
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+// Per-glyph vertical wobble phase + amplitude, like neal.fun wiggly-text.
+const glyphs = ANSWER.split('');
+const phases = glyphs.map((_,i)=>({phase: i*1.3, amp: 18 + (i%3)*8, freq: 0.004 + i*0.001}));
+
+function draw(t){
+  ctx.clearRect(0,0,400,150);
+  // background scribbles
+  ctx.strokeStyle = 'rgba(120,170,200,0.35)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<4;i++){
+    ctx.beginPath();
+    ctx.moveTo(0, 30+i*30);
+    for (let x=0;x<=400;x+=10){
+      ctx.lineTo(x, 30+i*30 + Math.sin(x*0.05+i)*8);
+    }
+    ctx.stroke();
+  }
+  // wobbly glyphs
+  ctx.font = 'bold 56px Georgia, serif';
+  ctx.fillStyle = '#1a3a6b';
+  ctx.textBaseline = 'middle';
+  const gap = 400 / glyphs.length;
+  for (let i=0;i<glyphs.length;i++){
+    const p = phases[i];
+    const dy = Math.sin(t*p.freq + p.phase) * p.amp;
+    const x = gap*i + gap/2;
+    const y = 75 + dy;
+    // slight horizontal wobble too, but mostly vertical (what dewiggle reverses)
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.sin(t*p.freq*0.7 + p.phase)*0.04);
+    ctx.fillText(glyphs[i], -16, 0);
+    ctx.restore();
+  }
+}
+
+function loop(t){ draw(t); }
+setInterval(function(){ loop(performance.now()); }, 50);
+
+document.getElementById('submit').addEventListener('click', ()=>{
+  const v = document.getElementById('ans').value.trim().toUpperCase();
+  const ok = v === ANSWER;
+  document.getElementById('result').textContent = ok ? 'CORRECT' : 'WRONG';
+  document.getElementById('result').style.color = ok ? 'green' : 'red';
+});
+</script>
+</body>
+</html>

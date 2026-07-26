@@ -103,7 +103,22 @@ async fn viewer_http_serves_index_and_stream() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("headless-use live viewer"));
+    assert!(body.contains("live viewer"), "index should be titled");
+    // The stream element is the page; the header floats over it.
+    assert!(
+        body.contains(r#"<img id="v" src="/stream""#),
+        "index must embed the stream"
+    );
+    assert!(
+        body.contains("object-fit: contain"),
+        "the stream must letterbox rather than stretch"
+    );
+    // Frame rate is derived client-side from the MJPEG load events, so the
+    // page must not depend on a server endpoint that does not exist.
+    assert!(
+        !body.contains("/status"),
+        "the viewer page must not reference an endpoint the server does not serve"
+    );
 
     // Stream content-type (read headers only, don't consume the body).
     let client = reqwest::Client::new();

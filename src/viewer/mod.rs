@@ -1,19 +1,23 @@
 //! Live viewer: stream the agent-controlled page over localhost as MJPEG,
-//! plus inject the neon-arrow cursor overlay so the agent's CDP mouse input
-//! is visually observable in real time.
+//! plus inject a cursor overlay so the agent's CDP mouse input is visually
+//! observable in real time.
 //!
 //! ## Why a viewer
 //! On headless Linux / Xvfb there is no visible OS cursor for
 //! `Input.dispatchMouseEvent`, so an agent's clicks and drags are invisible.
 //! The viewer solves two things at once:
 //!   1. injects a cursor overlay (see [`crate::browser::Page::inject_cursor_overlay`])
-//!   2. streams frames via CDP `Page.startScreencast` to a localhost-only MJPEG
-//!      HTTP endpoint so a human (or a test) can watch the agent work live.
+//!   2. streams frames via CDP `Page.startScreencast` to an MJPEG HTTP endpoint
+//!      so a human (or a test) can watch the agent work live.
+//!
+//! The overlay source lives here (`cursor-overlay.js`) rather than under
+//! `tests/`, because it ships inside the binary via `include_str!`.
 //!
 //! ## Security
-//! The HTTP server binds to `127.0.0.1` only — never `0.0.0.0` — to keep the
-//! remote CDP-attached page off the network, consistent with the project rule
-//! that CDP must never be exposed to other interfaces.
+//! The HTTP server binds to `127.0.0.1` by default. `--viewer-host` can widen
+//! that for remote viewing; the stream is unauthenticated, so that is an
+//! explicit operator decision and [`http::serve`] warns about it. The CDP
+//! endpoint is unaffected and always stays loopback-only.
 
 pub mod http;
 pub mod screencast;

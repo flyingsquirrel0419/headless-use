@@ -12,6 +12,7 @@
 //! checking visibility itself.
 
 pub mod annotate;
+pub mod dewiggle;
 pub mod reference;
 
 pub use reference::{

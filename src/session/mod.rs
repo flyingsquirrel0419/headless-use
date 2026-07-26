@@ -659,6 +659,122 @@ impl Session {
             .map_err(|e| BrowserError::Other(format!("annotate: {e}")))
     }
 
+    /// Capture several frames of a wiggling/animated text region and reverse
+    /// the per-glyph vertical wobble using *pixels only* (no answer arrays,
+    /// no DOM text/props). Returns a realigned, averaged PNG plus optional
+    /// per-glyph crops. This is the honest way to read a "wiggle" CAPTCHA.
+    ///
+    /// When `region` is None, the canvas element's bounding box is auto-
+    /// detected via `document.querySelector('canvas')`. When `chars` is Some,
+    /// the output is also segmented into that many equal-width glyph crops.
+    pub async fn dewiggle(
+        &self,
+        region: Option<(f64, f64, f64, f64)>,
+        frames: u32,
+        interval_ms: u64,
+        chars: Option<usize>,
+    ) -> Result<DewiggleOutput, BrowserError> {
+        let frames = frames.clamp(2, 60);
+        let interval_ms = interval_ms.clamp(20, 2000);
+
+        // Animated text pages run a perpetual `requestAnimationFrame` loop. In
+        // headless=new without a screencast, Chrome does not pump the page's
+        // event loop, so CDP commands (DOM.*, Runtime.evaluate) hang. Starting
+        // a screencast forces Chrome to render frames, which pumps rAF and
+        // unblocks CDP. We start it for the duration of dewiggle and stop it
+        // afterwards so we don't leave a background render loop running.
+        let screencast = crate::viewer::Screencast::start(&self.page, 60, 1280, 720)
+            .await
+            .ok();
+
+        // Run the core capture+process logic in an inner block so the screencast
+        // is ALWAYS stopped, even on the early-return error paths below.
+        let inner = async {
+            // Resolve the capture region (viewport CSS px). Auto-detect a canvas.
+            let (vx, vy, vw, vh) = match region {
+                Some(r) => r,
+                None => {
+                    // Detect the canvas via the DOM domain (no JS evaluation).
+                    // A perpetual rAF loop makes Runtime.evaluate hang in headless
+                    // mode, so we avoid JS entirely for region detection.
+                    match self.page.element_box_by_selector("canvas").await? {
+                        Some((x, y, w, h)) => (x, y, w, h),
+                        None => {
+                            return Err(BrowserError::Other(
+                                "dewiggle: no canvas found and no region given; pass region=[x,y,w,h]".into(),
+                            ));
+                        }
+                    }
+                }
+            };
+            if vw < 2.0 || vh < 2.0 {
+                return Err(BrowserError::Other(format!(
+                    "dewiggle region too small: {vw}x{vh}"
+                )));
+            }
+
+            let seq = self
+                .record_action(
+                    "dewiggle",
+                    json!({ "region": [vx, vy, vw, vh], "frames": frames, "intervalMs": interval_ms, "chars": chars }),
+                )
+                .await;
+            let _ = seq;
+
+            // Capture N frames at interval_ms cadence. Clip is document-relative,
+            // so add the scroll offset.
+            let (sx, sy) = self.page.scroll_position().await?;
+            let clip = (vx + sx as f64, vy + sy as f64, vw, vh);
+            let mut dewiggle_frames: Vec<crate::observe::dewiggle::DewiggleFrame> = Vec::new();
+            for i in 0..frames {
+                if i > 0 {
+                    tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                }
+                let png = self.page.screenshot(false, Some(clip)).await?;
+                let gray = crate::observe::dewiggle::decode_gray(&png)
+                    .map_err(|e| BrowserError::Other(format!("dewiggle decode: {e}")))?;
+                dewiggle_frames.push(crate::observe::dewiggle::DewiggleFrame::new(gray));
+            }
+
+            let opts = crate::observe::dewiggle::DewiggleOptions {
+                chars,
+                ..Default::default()
+            };
+            let result = crate::observe::dewiggle::dewiggle(&dewiggle_frames, &opts);
+            let image_png = crate::observe::dewiggle::encode_png(&result.image)
+                .map_err(|e| BrowserError::Other(format!("dewiggle encode: {e}")))?;
+            let char_crops_b64: Vec<String> = result
+                .char_crops
+                .iter()
+                .map(|c| {
+                    crate::observe::dewiggle::encode_png(c)
+                        .map(|b| {
+                            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &b)
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+
+            let image_b64 =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_png);
+            Ok::<DewiggleOutput, BrowserError>(DewiggleOutput {
+                image: image_b64,
+                image_bytes: image_png.len(),
+                char_crops: char_crops_b64,
+                frame_count: result.frame_count,
+                region: json!({ "x": vx, "y": vy, "width": vw, "height": vh }),
+                bands: result.bands,
+            })
+        };
+
+        let result = inner.await;
+        // Always stop the screencast, success or failure.
+        if let Some(sc) = screencast {
+            let _ = sc.stop().await;
+        }
+        result
+    }
+
     /// Compute the `Page.captureScreenshot` clip rectangle for a target, in
     /// **document** coordinates.
     ///
@@ -853,6 +969,24 @@ impl From<crate::input::Point> for ClickTarget {
     fn from(p: crate::input::Point) -> Self {
         ClickTarget::Point(p)
     }
+}
+
+/// Output of a `dewiggle` capture: a realigned, averaged PNG (base64) of the
+/// wiggling text region, plus optional per-glyph crops.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DewiggleOutput {
+    /// Realigned + averaged image, PNG, base64-encoded.
+    pub image: String,
+    /// Size of the PNG in bytes (before base64).
+    pub image_bytes: usize,
+    /// Per-glyph crops, PNG base64 (empty when `chars` was None).
+    pub char_crops: Vec<String>,
+    /// Number of frames captured.
+    pub frame_count: usize,
+    /// The captured region (viewport CSS px).
+    pub region: serde_json::Value,
+    /// Glyph column-band boundaries (start, end) in the output image.
+    pub bands: Vec<(u32, u32)>,
 }
 
 /// CSS-escape an id for safe querySelector. Only allows safe chars.

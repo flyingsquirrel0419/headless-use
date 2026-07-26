@@ -287,20 +287,134 @@ async fn write_frame(stream: &mut tokio::net::TcpStream, frame: &Frame) -> std::
     stream.flush().await
 }
 
+/// The viewer index page.
+///
+/// ## Why the stream owns the whole window
+/// The previous layout stacked a header, a full-width image and a paragraph of
+/// explanation down the page, so a 1280x720 stream overflowed the fold on a
+/// laptop and the thing you actually came to watch was never fully visible.
+/// The stream is now the page: it fills the viewport and letterboxes via
+/// `object-fit: contain`, so the aspect ratio is honored at any window size.
+///
+/// The header floats over the top edge and fades out after a few idle seconds,
+/// because it is orientation, not content — useful when you arrive, noise once
+/// you are watching. Moving the mouse brings it back.
+///
+/// No new endpoints: this is a static string, and everything it shows comes
+/// from the page itself or from the image element's own load events.
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>headless-use — live viewer</title>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>headless-use — live viewer</title>
 <style>
-  html,body{margin:0;background:#0d1117;color:#c9d1d9;font-family:system-ui,sans-serif}
-  .bar{padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:12px}
-  .dot{width:8px;height:8px;border-radius:50%;background:#3fb950;box-shadow:0 0 6px #3fb950;animation:pulse 1.6s infinite}
-  @keyframes pulse{50%{opacity:.4}}
-  .title{font-size:14px;font-weight:600}
-  .url{font-size:12px;color:#8b949e;font-family:monospace;margin-left:auto}
-  img{display:block;width:100%;height:auto;background:#000}
-  .hint{padding:8px 16px;font-size:12px;color:#8b949e}
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: #0b0b0d; color: #e8e8ea;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  .stage {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .frame {
+    position: relative;
+    max-width: 100%; max-height: 100%;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 24px 60px rgba(0,0,0,.55);
+    overflow: hidden;
+    background: #000;
+    line-height: 0;
+  }
+  img {
+    display: block;
+    max-width: 100%; max-height: calc(100vh - 32px);
+    width: auto; height: auto;
+    object-fit: contain;
+  }
+  .bar {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 18px;
+    font-size: 13px;
+    background: linear-gradient(180deg, rgba(11,11,13,.92), rgba(11,11,13,0));
+    transition: opacity .35s ease;
+    pointer-events: none;
+    z-index: 2;
+  }
+  body.idle .bar { opacity: 0; }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #35c759; box-shadow: 0 0 8px rgba(53,199,89,.7);
+    animation: pulse 2s ease-in-out infinite;
+    flex: none;
+  }
+  body.stalled .dot { background: #f5a524; box-shadow: 0 0 8px rgba(245,165,36,.7); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .name { font-weight: 600; letter-spacing: -.01em; }
+  .sep { color: #4a4a52; }
+  .meta { color: #8a8a94; font-variant-numeric: tabular-nums; }
+  .spacer { margin-left: auto; }
 </style></head>
 <body>
-<div class="bar"><span class="dot"></span><span class="title">headless-use live viewer</span><span class="url">127.0.0.1</span></div>
-<img id="v" src="/stream" alt="live page stream">
-<div class="hint">This stream reflects the agent-controlled headless browser. Mouse input is delivered via real CDP Input events; the neon arrow is the agent cursor overlay.</div>
+<div class="bar">
+  <span class="dot"></span>
+  <span class="name">headless-use</span>
+  <span class="sep">/</span>
+  <span class="meta" id="state">connecting…</span>
+  <span class="spacer"></span>
+  <span class="meta" id="dims"></span>
+</div>
+<div class="stage">
+  <div class="frame"><img id="v" src="/stream" alt="live page stream"></div>
+</div>
+<script>
+(function () {
+  var img = document.getElementById('v');
+  var state = document.getElementById('state');
+  var dims = document.getElementById('dims');
+  var body = document.body;
+
+  // The MJPEG stream is a single never-ending response, so `load` fires once
+  // per frame. Counting those gives an honest frame rate without any server
+  // support.
+  var frames = 0, lastSeen = 0;
+  img.addEventListener('load', function () {
+    frames++;
+    lastSeen = Date.now();
+    if (img.naturalWidth) {
+      dims.textContent = img.naturalWidth + '×' + img.naturalHeight;
+    }
+  });
+  img.addEventListener('error', function () {
+    state.textContent = 'stream ended';
+    body.classList.add('stalled');
+  });
+
+  setInterval(function () {
+    var fps = frames; frames = 0;
+    if (!lastSeen) { return; }
+    // Chrome only emits screencast frames on repaint, so a static page is
+    // idle, not broken. Say so rather than showing 0 fps as an error.
+    var quiet = Date.now() - lastSeen > 2500;
+    body.classList.toggle('stalled', quiet);
+    state.textContent = quiet ? 'idle' : fps + ' fps';
+  }, 1000);
+
+  // Fade the header out while nothing is happening at the viewer end.
+  var idleTimer;
+  function wake() {
+    body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { body.classList.add('idle'); }, 3000);
+  }
+  ['mousemove', 'keydown', 'touchstart'].forEach(function (e) {
+    window.addEventListener(e, wake, { passive: true });
+  });
+  wake();
+})();
+</script>
 </body></html>"#;

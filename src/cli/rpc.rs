@@ -124,6 +124,43 @@ pub async fn dispatch(
                 "data": b64
             }))
         }
+        "dewiggle" => {
+            // Capture N frames of an animated text region and reverse the
+            // per-glyph vertical wobble using pixels only. No answer arrays
+            // or DOM text are read — this is an honest pixel-only approach.
+            let region = params
+                .get("region")
+                .and_then(|v| v.as_array())
+                .and_then(|a| {
+                    if a.len() == 4 {
+                        let x = a[0].as_f64()?;
+                        let y = a[1].as_f64()?;
+                        let w = a[2].as_f64()?;
+                        let h = a[3].as_f64()?;
+                        Some((x, y, w, h))
+                    } else {
+                        None
+                    }
+                });
+            let frames = params.get("frames").and_then(|v| v.as_u64()).unwrap_or(12) as u32;
+            let interval_ms = params
+                .get("intervalMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(80);
+            let chars = params
+                .get("chars")
+                .and_then(|v| v.as_u64())
+                .map(|c| c as usize);
+            let out = session.dewiggle(region, frames, interval_ms, chars).await?;
+            Ok(json!({
+                "image": out.image,
+                "imageBytes": out.image_bytes,
+                "charCrops": out.char_crops,
+                "frameCount": out.frame_count,
+                "region": out.region,
+                "bands": out.bands
+            }))
+        }
         "click" => {
             let target = resolve_target(params)?;
             let button = parse_button(params)?;

@@ -41,6 +41,8 @@ pub enum Command {
     Replay(ReplayArgs),
     /// Start a session with a live localhost viewer (MJPG stream + cursor overlay).
     View(ViewArgs),
+    /// Capture an animated text region and reverse per-glyph wobble (pixels only).
+    Dewiggle(DewiggleArgs),
 }
 
 /// Arguments shared by launch/serve/open.
@@ -143,6 +145,41 @@ pub struct RunArgs {
     #[command(flatten)]
     pub launch: LaunchArgs,
     /// Restrict navigation to these hosts (repeatable). Others are blocked.
+    #[arg(long = "allow-host", value_name = "HOST")]
+    pub allow_hosts: Vec<String>,
+    /// Always block navigation to these hosts (repeatable, takes precedence).
+    #[arg(long = "deny-host", value_name = "HOST")]
+    pub deny_hosts: Vec<String>,
+}
+
+/// Dewiggle args: capture an animated text region and reverse per-glyph
+/// vertical wobble using pixels only. Honest pixel-only approach — no answer
+/// arrays or DOM text are read.
+#[derive(Parser, Debug, Clone)]
+pub struct DewiggleArgs {
+    /// URL to open first.
+    #[arg(long)]
+    pub url: String,
+    /// Capture region as x,y,w,h in viewport CSS px. When omitted, the canvas
+    /// element's bounding box is auto-detected.
+    #[arg(long, value_name = "X,Y,W,H")]
+    pub region: Option<String>,
+    /// Number of frames to capture (2..=60, default 12).
+    #[arg(long, default_value_t = 12)]
+    pub frames: u32,
+    /// Milliseconds between frames (default 80).
+    #[arg(long, default_value_t = 80)]
+    pub interval: u64,
+    /// Segment into N equal-width glyph bands and save per-glyph crops.
+    #[arg(long)]
+    pub chars: Option<usize>,
+    /// Save the realigned PNG here.
+    #[arg(long, value_name = "PATH")]
+    pub out: String,
+    /// Browser launch options.
+    #[command(flatten)]
+    pub launch: LaunchArgs,
+    /// Restrict navigation to these hosts (repeatable).
     #[arg(long = "allow-host", value_name = "HOST")]
     pub allow_hosts: Vec<String>,
     /// Always block navigation to these hosts (repeatable, takes precedence).

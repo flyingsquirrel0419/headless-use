@@ -119,6 +119,7 @@ docker run --rm --network host headless-use \
 - **Observe**: DOM-based interactive-element extraction, semantic `@g<gen>:eN` references (generation-bound for stale detection), bounding boxes, stale-reference detection on any navigation
 - **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
 - **Screenshots**: viewport, full-page, element-region (`--element @eN`)
+- **Dewiggle**: reverse per-glyph vertical wobble in animated text CAPTCHAs using **pixels only** — no answer arrays, no DOM text/props. Captures N frames, realigns each column to its neutral baseline, and averages them into a sharpened image plus optional per-glyph crops. `headless-use dewiggle --url ... --out out.png --chars 6`
 - **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
 - **Trace + Replay**: `actions.jsonl`, `report.html` (self-contained, screenshots embedded), forced secret redaction at the writer boundary, and `replay` to re-execute a recorded trace
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
@@ -170,11 +171,17 @@ headless-use
 ├── launch       Launch a browser and keep it running
 ├── serve        Start a long-lived JSON-RPC session over stdio
 ├── run          Run a one-shot action and exit
+├── dewiggle     Capture an animated text region and reverse per-glyph wobble (pixels only)
 ├── view         Serve a live viewer + JSON-RPC session (see below)
 ├── replay       Re-execute a recorded trace from a run directory
 ├── doctor       Diagnose the environment
 ├── install-browser   Print browser install guidance
 └── mcp          Start the MCP server over stdio
+```
+
+```bash
+# Reverse the wobble in an animated text CAPTCHA, saving 6 per-glyph crops.
+headless-use dewiggle --url https://example.com/captcha --out out.png --chars 6 --frames 12
 ```
 
 ### Live viewer
@@ -186,6 +193,17 @@ headless-use view --no-sandbox          # http://127.0.0.1:7780/
 `view` behaves exactly like `serve` (JSON-RPC on stdio) and additionally serves
 an MJPEG stream of the page with the agent cursor overlay.
 
+**Cursor motion.** `view` defaults to `--cursor-motion smooth`: the cursor walks
+to a click/hover target, emitting real intermediate `mouseMoved` events. That is
+what makes the stream readable, and it also drives hover menus that need actual
+movement. It costs the travel time (~220ms) per click, so `serve`/`run`/`mcp`
+default to `instant`. Override either way:
+
+```bash
+headless-use view  --cursor-motion instant   # fastest, cursor teleports
+headless-use serve --cursor-motion smooth    # slower, hover-menu friendly
+```
+
 > **Exposure note:** the viewer binds to `127.0.0.1` by default.
 > `--viewer-host 0.0.0.0` opens it to the network, and the stream is
 > **unauthenticated** — anyone who can reach that address sees whatever the page
@@ -193,7 +211,7 @@ an MJPEG stream of the page with the agent cursor overlay.
 
 `serve` accepts JSON-RPC methods including: `browser.open`, `observe`, `screenshot`,
 `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`, `scroll`, `mouse.drag`,
-`mouse.drag_path`, `type`, `insert-text`, `key.press`, `key.down`, `key.up`, `wait`,
+`mouse.drag_path`, `type`, `insert-text`, `dewiggle`, `key.press`, `key.down`, `key.up`, `wait`,
 `console`, `network`, `browser.close`. Add `--json` to launch/run for machine output.
 
 ## Error model

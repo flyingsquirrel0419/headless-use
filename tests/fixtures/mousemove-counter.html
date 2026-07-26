@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>mousemove counter</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #target {
+      position: absolute; left: 560px; top: 420px;
+      width: 160px; height: 60px;
+      font-size: 18px;
+    }
+    #count { position: absolute; left: 20px; top: 20px; font-size: 20px; }
+  </style>
+</head>
+<body>
+  <div id="count">moves: 0</div>
+  <button id="target">Target</button>
+  <script>
+    // Counts every mousemove the page receives. `CursorMotion::Instant` should
+    // produce exactly one on the way to a click; `CursorMotion::Smooth` should
+    // produce a burst as the cursor is interpolated along the path.
+    window.__moves = 0;
+    window.__clicks = 0;
+    document.addEventListener('mousemove', function () {
+      window.__moves++;
+      document.getElementById('count').textContent = 'moves: ' + window.__moves;
+    });
+    document.getElementById('target').addEventListener('click', function () {
+      window.__clicks++;
+    });
+    // Reset the counter on demand so a test can measure a single gesture.
+    window.__resetMoves = function () { window.__moves = 0; };
+  </script>
+</body>
+</html>

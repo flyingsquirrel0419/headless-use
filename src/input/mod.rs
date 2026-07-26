@@ -17,7 +17,7 @@ pub mod types;
 
 pub use keyboard::{Key, Keyboard};
 pub use mouse::{Mouse, MouseButton};
-pub use types::{parse_modifiers, parse_point, parse_point_list, Modifiers, Point};
+pub use types::{parse_modifiers, parse_point, parse_point_list, CursorMotion, Modifiers, Point};
 
 use crate::browser::Page;
 
