@@ -107,6 +107,17 @@ pub fn mask_json(v: &Value) -> Value {
                 if is_secret_key(k) || SENSITIVE_HEADERS.contains(&k.to_ascii_lowercase().as_str())
                 {
                     out.insert(k.clone(), Value::String("[REDACTED]".into()));
+                } else if is_url_key(k) {
+                    // URL-valued keys (url, href, src, ...) may carry secrets
+                    // in their query string (e.g. `?token=...`). mask_secret
+                    // alone does not look inside the query, so scrub the params
+                    // first, then run the normal string masking on the result.
+                    if let Value::String(s) = val {
+                        let scrubbed = mask_url_secrets(s);
+                        out.insert(k.clone(), Value::String(mask_secret(&scrubbed)));
+                    } else {
+                        out.insert(k.clone(), mask_json(val));
+                    }
                 } else {
                     out.insert(k.clone(), mask_json(val));
                 }
@@ -117,6 +128,15 @@ pub fn mask_json(v: &Value) -> Value {
         Value::String(s) => Value::String(mask_secret(s)),
         other => other.clone(),
     }
+}
+
+/// Keys whose string values should be treated as URLs and have their query
+/// parameters scrubbed for secrets in addition to whole-value masking.
+fn is_url_key(k: &str) -> bool {
+    matches!(
+        k.to_ascii_lowercase().as_str(),
+        "url" | "href" | "src" | "link" | "uri" | "endpoint" | "redirect_uri" | "callback_url"
+    )
 }
 
 /// Heuristic: looks like a long opaque token (hex/base64) without spaces.

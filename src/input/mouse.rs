@@ -169,6 +169,16 @@ impl<'a> Mouse<'a> {
             return self.move_to(p, mods).await;
         }
         let start = self.position().await;
+        // Short-circuit when already at the target. Without this, a click or
+        // hover to the point the cursor already occupies (the common case:
+        // `Session::click`/`hover` call `travel_to` -> `move_smooth` first)
+        // would still emit `steps` phantom `mouseMoved` events at the same
+        // coordinates. That is a lie in the event stream and in traces, and it
+        // breaks the `smooth_click_does_not_double_move_at_the_target`
+        // regression test (which fails with `got 24` otherwise).
+        if start == p {
+            return Ok(());
+        }
         // Target a ~60fps step rate but never faster than 8ms, otherwise
         // Chrome's input pipeline stutters. If the caller asks for very few
         // steps we honor it; if many, we cap the interval.
@@ -286,7 +296,13 @@ impl<'a> Mouse<'a> {
         if count == 0 {
             return Err(BrowserError::InvalidInput("click count must be > 0".into()));
         }
-        self.move_to(p, mods).await?;
+        // Skip the move when the cursor is already there. A caller that has
+        // just walked the cursor to `p` (see `CursorMotion::Smooth`) would
+        // otherwise emit one more `mouseMoved` at the destination it already
+        // reached — harmless but a lie in the event stream and in traces.
+        if self.position().await != p {
+            self.move_to(p, mods).await?;
+        }
         for i in 1..=count {
             // Accumulate button state: press adds, release removes.
             // This ensures that clicking right while left is held reports
