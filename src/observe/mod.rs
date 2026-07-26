@@ -52,19 +52,25 @@ impl<'a> ObserveBuilder<'a> {
         let script = include_str!("extract_elements.js");
         let result = self.page.evaluate_sync(script).await?;
 
-        let raw_elements = result
+        let raw = result
             .value()
             .cloned()
-            .unwrap_or_else(|| Value::Array(vec![]));
+            .unwrap_or_else(|| Value::Object(Default::default()));
 
-        let elements: Vec<ElementRef> = raw_elements
-            .as_array()
+        let elements: Vec<ElementRef> = raw
+            .get("elements")
+            .and_then(|v| v.as_array())
             .map(|a| {
                 a.iter()
                     .filter_map(|v| serde_json::from_value::<ElementRef>(v.clone()).ok())
                     .collect()
             })
             .unwrap_or_default();
+
+        let js_truncated = raw
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let mut registry = RefRegistry::new();
         for el in &elements {
@@ -85,7 +91,7 @@ impl<'a> ObserveBuilder<'a> {
             elements: registry.into_sorted(),
             generation,
             nav_generation: 0,
-            truncated: false,
+            truncated: js_truncated,
         })
     }
 

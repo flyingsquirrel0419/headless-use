@@ -1,0 +1,37 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Delegated TicTacToe</title>
+<style>
+  #board { display: grid; grid-template-columns: repeat(3, 60px); width: 180px; }
+  .cell { width: 60px; height: 60px; border: 1px solid #333; font-size: 40px; text-align: center; line-height: 60px; }
+</style></head>
+<body>
+<h2>TicTacToe</h2>
+<!-- Delegation: ONE listener on the board; cells are plain divs with no
+     onclick attribute, no cursor:pointer, no role. Current observe cannot
+     see them at all. -->
+<div id="board">
+  <div class="cell" data-i="0"></div><div class="cell" data-i="1"></div><div class="cell" data-i="2"></div>
+  <div class="cell" data-i="3"></div><div class="cell" data-i="4"></div><div class="cell" data-i="5"></div>
+  <div class="cell" data-i="6"></div><div class="cell" data-i="7"></div><div class="cell" data-i="8"></div>
+</div>
+<div id="status">next: X</div>
+<!-- Direct addEventListener on a plain div: no onclick attr, no pointer
+     cursor. Invisible to current observe; the listener pass must promote it. -->
+<div id="refresh" style="width:40px;height:40px;border:1px solid #999">↻</div>
+<!-- Plain inert div: must NOT be promoted. -->
+<div id="inert" style="width:100px;height:30px">just text</div>
+<!-- Canvas: opaque interactive surface. -->
+<canvas id="game" width="120" height="80"></canvas>
+<script>
+  let turn = 'X';
+  document.getElementById('board').addEventListener('click', (ev) => {
+    const cell = ev.target.closest('.cell');
+    if (!cell || cell.textContent) return; // taken cell: game logic rejects, no DOM change
+    cell.textContent = turn;
+    turn = turn === 'X' ? 'O' : 'X';
+    document.getElementById('status').textContent = 'next: ' + turn;
+  });
+  document.getElementById('refresh').addEventListener('click', () => {
+    document.getElementById('status').textContent = 'refreshed';
+  });
+</script>
+</body></html>
