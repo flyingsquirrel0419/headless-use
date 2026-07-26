@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — observe listener detection and click reports
+
+- observe: detects programmatically-attached click listeners via CDP
+  `DOMDebugger.getEventListeners`; delegation containers and canvas are
+  flagged `opaqueInteractive` with an explicit "pick coordinates from the
+  screenshot" hint instead of being silently omitted.
+- click: every click now returns a report — pre-click hit test
+  (`hit.element`, `matched_target`, `occluded_by`) and post-click effects
+  within a 300 ms window (`dom_mutations`, `network_requests`, `navigated`,
+  `focus_changed`). All-zero effects = dead click, no screenshot needed.
+
 ### Added — stealth mode (`--stealth`)
 
 - **`--stealth` keeps `--headless=new` but stops it announcing itself**, so sites

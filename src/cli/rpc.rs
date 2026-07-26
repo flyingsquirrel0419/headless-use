@@ -169,10 +169,10 @@ pub async fn dispatch(
             let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
             let mods = parse_modifiers_param(params);
             let hold_ms = params.get("hold").and_then(|v| v.as_u64()).unwrap_or(0);
-            session
+            let report = session
                 .click(target, button, count, mods, Duration::from_millis(hold_ms))
                 .await?;
-            Ok(json!({ "success": true }))
+            Ok(json!({ "success": true, "hit": report.hit, "effects": report.effects }))
         }
         "hover" => {
             let target = resolve_target(params)?;
