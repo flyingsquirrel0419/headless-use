@@ -153,6 +153,12 @@ All-zero effects mean the response explicitly reports no observable effect —
 the agent knows immediately, without a screenshot, that the click did
 nothing.
 
+Known limitation: a canvas application that reacts by repainting the canvas
+only (no DOM/attribute change, no network) produces zero reported effects —
+canvas paints are invisible to MutationObserver. For canvas surfaces the
+agent still needs a screenshot to confirm a reaction; the `opaque_interactive`
+flag on the canvas is the cue.
+
 The window is a fixed short delay, not `wait_until_stable()`; callers that
 want full stabilization continue to call that explicitly as today.
 
