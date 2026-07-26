@@ -207,10 +207,13 @@ pub async fn replay(args: crate::cli::ReplayArgs) -> i32 {
 
 /// Run the `view` command: a session with a live localhost MJPEG viewer.
 ///
-/// Starts the browser session, injects the neon-arrow cursor overlay, starts
-/// the screencast + HTTP viewer on 127.0.0.1, prints the viewer URL, then
-/// runs the same stdio JSON-RPC loop as `serve` so the agent can still issue
-/// observe/click/type/etc. while a human watches the stream in a browser tab.
+/// Starts the browser session, injects the cursor overlay, starts the
+/// screencast + HTTP viewer, prints the viewer URL, then runs the same stdio
+/// JSON-RPC loop as `serve` so the agent can still issue observe/click/type/etc.
+/// while a human watches the stream in a browser tab.
+///
+/// Unlike `serve`, this defaults to [`crate::input::CursorMotion::Smooth`]: the
+/// point of `view` is to be watched, and a teleporting cursor is unreadable.
 pub async fn view(args: ViewArgs) -> i32 {
     let opts = match args.launch.to_launch_options() {
         Ok(o) => o.with_no_sandbox_for_root(),
@@ -224,9 +227,16 @@ pub async fn view(args: ViewArgs) -> i32 {
     if !args.launch.json && opts.compat == crate::browser::launch::CompatMode::Chromium {
         eprintln!("note: using --compat chromium (headless=new). The viewer stream works, but for a real rendered window use --compat xvfb.");
     }
+    let motion = match crate::input::CursorMotion::parse(&args.cursor_motion) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await,
+        Ok(s) => s.with_policy_async(policy).await.with_cursor_motion(motion),
         Err(e) => return output::print_error(&e),
     };
     // Inject the cursor overlay so the agent's mouse is visible.
@@ -295,9 +305,16 @@ pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
             return 1;
         }
     };
+    let motion = match crate::input::CursorMotion::parse(&args.cursor_motion) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await,
+        Ok(s) => s.with_policy_async(policy).await.with_cursor_motion(motion),
         Err(e) => return output::print_error(&e),
     };
     crate::cli::rpc::run_stdio(session).await
@@ -348,7 +365,11 @@ async fn run_oneshot(
         } else {
             None
         };
-        let data = session.screenshot(args.full_page, element).await?;
+        let data = if args.annotate {
+            session.screenshot_annotated(args.full_page).await?
+        } else {
+            session.screenshot(args.full_page, element).await?
+        };
         crate::util::write_bytes(std::path::Path::new(path), &data)
             .map_err(crate::browser::BrowserError::Io)?;
         if args.launch.json {

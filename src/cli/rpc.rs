@@ -61,16 +61,44 @@ pub async fn dispatch(
             Ok(json!({ "url": session.page().url().await? }))
         }
         "observe" => {
-            let obs = session.observe().await?;
+            let mode = params.get("mode").and_then(|v| v.as_str());
+            let obs = session.observe_with_mode(mode).await?;
             Ok(json!({
                 "page": obs.page,
                 "elements": obs.elements,
                 "generation": obs.generation,
             }))
         }
+        // Run arbitrary JS in the page and return the value.
+        //
+        // [Decision Log] — page.evaluate exposure
+        // - 목적과 의도: 캔버스/SVG/비표준 위젯에서 에이전트가 직접
+        //   getBoundingClientRect() 등으로 좌표를 조회할 수 있게 한다.
+        //   observe의 휴리스틱이 잡지 못하는 요소도 에이전트가 JS로 해결.
+        // - 검토한 주요 대안: evaluate 비노출 + observe만 강화.
+        // - 선택한 방식: 전체 JS 허용 + README 경고. mutation 차단 안 함.
+        // - 장점: 범용적. 단점: 보안 — 신뢰된 에이전트 환경에서만 사용.
+        "page.evaluate" | "evaluate" => {
+            let expr = params
+                .get("expression")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::browser::BrowserError::InvalidInput(
+                        "expected 'expression' (a JS string)".into(),
+                    )
+                })?;
+            let result = session.page().evaluate(expr).await?;
+            // The value is already returnByValue JSON; pass it through.
+            let value = result.value().cloned().unwrap_or(Value::Null);
+            Ok(json!({ "value": value }))
+        }
         "screenshot" => {
             let full_page = params
                 .get("fullPage")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let annotate = params
+                .get("annotate")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             // Optional element-region screenshot via a semantic reference.
@@ -83,9 +111,18 @@ pub async fn dispatch(
             } else {
                 None
             };
-            let data = session.screenshot(full_page, element).await?;
+            let data = if annotate {
+                session.screenshot_annotated(full_page).await?
+            } else {
+                session.screenshot(full_page, element).await?
+            };
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
-            Ok(json!({ "fullPage": full_page, "bytes": data.len(), "data": b64 }))
+            Ok(json!({
+                "fullPage": full_page,
+                "annotated": annotate,
+                "bytes": data.len(),
+                "data": b64
+            }))
         }
         "click" => {
             let target = resolve_target(params)?;

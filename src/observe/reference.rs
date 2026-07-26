@@ -52,6 +52,12 @@ pub struct ElementRef {
         default
     )]
     pub selector_hint: String,
+    /// Whether this element is a non-standard "visual widget" (canvas, svg,
+    /// cursor:pointer div, etc.) captured by the heuristic second pass rather
+    /// than the standard interactive selector. Interactive-only observe modes
+    /// exclude these; annotate renders them in a different color.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub visual: bool,
     /// The canonical reference token (`@g<gen>:e<num>`), populated after the
     /// registry assigns a generation. Agents should use this token directly for
     /// clicks/hovers so the generation is always carried for stale detection.
@@ -305,6 +311,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            visual: false,
             ref_token: String::new(),
         });
         r.insert(ElementRef {
@@ -322,6 +329,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            visual: false,
             ref_token: String::new(),
         });
         let v = r.into_sorted();
@@ -347,6 +355,7 @@ mod tests {
             checked: None,
             value: None,
             selector_hint: String::new(),
+            visual: false,
             ref_token: String::new(),
         };
         let (cx, cy) = e.center();

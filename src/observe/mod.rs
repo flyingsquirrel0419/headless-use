@@ -11,6 +11,7 @@
 //! `click @e3` and let the runtime resolve the current location, scrolling and
 //! checking visibility itself.
 
+pub mod annotate;
 pub mod reference;
 
 pub use reference::{

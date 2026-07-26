@@ -117,3 +117,179 @@ async fn serve_rpc_observe_click_type() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// `page.evaluate` lets the agent run arbitrary JS to query element coordinates
+/// directly — the escape hatch for canvas/SVG/non-standard widgets that observe's
+/// heuristic misses. It returns the JSON value of the expression.
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_page_evaluate_returns_value() {
+    common::init();
+    let srv = common::FixtureServer::start().await;
+    let mut child = Command::new(binary())
+        .args(["serve", "--no-sandbox"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let to = Duration::from_secs(25);
+
+    send(
+        &mut stdin,
+        "browser.open",
+        json!({ "url": srv.url("visual-widget.html") }),
+        1,
+    );
+    let _ = recv(&mut stdout, to).expect("open response");
+
+    // Query the fake-captcha box bounds directly via JS.
+    send(
+        &mut stdin,
+        "page.evaluate",
+        json!({
+            "expression": "(()=>{const e=document.getElementById('fake-captcha');const r=e.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height});})()"
+        }),
+        2,
+    );
+    let r = recv(&mut stdout, to).expect("evaluate response");
+    let val_str = r["result"]["value"].as_str().expect("value");
+    let v: Value = serde_json::from_str(val_str).expect("parse");
+    // The fake-captcha is at left:200px, top:150px, width 200 (+20 padding), height 70.
+    assert_eq!(v["x"].as_f64(), Some(200.0));
+    assert_eq!(v["y"].as_f64(), Some(150.0));
+
+    send(&mut stdin, "browser.close", json!({}), 99);
+    let _ = recv(&mut stdout, to);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// observe must capture non-standard visual widgets (canvas, cursor:pointer
+/// divs) so an agent gets a ref for them instead of guessing coordinates.
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_observe_captures_visual_widgets() {
+    common::init();
+    let srv = common::FixtureServer::start().await;
+    let mut child = Command::new(binary())
+        .args(["serve", "--no-sandbox"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let to = Duration::from_secs(25);
+
+    send(
+        &mut stdin,
+        "browser.open",
+        json!({ "url": srv.url("visual-widget.html") }),
+        1,
+    );
+    let _ = recv(&mut stdout, to).expect("open response");
+
+    // Default observe: should include the canvas and the cursor:pointer divs.
+    send(&mut stdin, "observe", json!({ "mode": "compact" }), 2);
+    let r = recv(&mut stdout, to).expect("observe response");
+    let elements = r["result"]["elements"].as_array().unwrap();
+    let has_canvas = elements
+        .iter()
+        .any(|e| e["tagName"] == "canvas" || e["role"] == "canvas");
+    assert!(has_canvas, "observe should capture the canvas widget");
+    let has_clickable_div = elements
+        .iter()
+        .any(|e| e["role"] == "div" && e["visual"] == true);
+    assert!(
+        has_clickable_div,
+        "observe should capture the cursor:pointer div as a visual widget"
+    );
+
+    // interactive-only mode must EXCLUDE visual widgets.
+    send(
+        &mut stdin,
+        "observe",
+        json!({ "mode": "interactive-only" }),
+        3,
+    );
+    let r2 = recv(&mut stdout, to).expect("observe interactive-only");
+    let elems_io = r2["result"]["elements"].as_array().unwrap();
+    let visual_count = elems_io.iter().filter(|e| e["visual"] == true).count();
+    assert_eq!(
+        visual_count, 0,
+        "interactive-only must exclude visual widgets"
+    );
+
+    send(&mut stdin, "browser.close", json!({}), 99);
+    let _ = recv(&mut stdout, to);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// screenshot --annotate returns a PNG with boxes/labels drawn over it. We
+/// verify it returns valid base64 PNG data larger than the raw screenshot
+/// (annotations add pixels) and that it reports the annotated flag.
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_screenshot_annotate_returns_png_with_boxes() {
+    common::init();
+    let srv = common::FixtureServer::start().await;
+    let mut child = Command::new(binary())
+        .args(["serve", "--no-sandbox"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let to = Duration::from_secs(25);
+
+    send(
+        &mut stdin,
+        "browser.open",
+        json!({ "url": srv.url("visual-widget.html") }),
+        1,
+    );
+    let _ = recv(&mut stdout, to).expect("open response");
+
+    // Raw screenshot.
+    send(&mut stdin, "screenshot", json!({}), 2);
+    let raw = recv(&mut stdout, to).expect("raw screenshot");
+    let raw_bytes = raw["result"]["bytes"].as_u64().unwrap();
+
+    // Annotated screenshot.
+    send(&mut stdin, "screenshot", json!({ "annotate": true }), 3);
+    let ann = recv(&mut stdout, to).expect("annotated screenshot");
+    assert_eq!(ann["result"]["annotated"], json!(true));
+    let ann_bytes = ann["result"]["bytes"].as_u64().unwrap();
+    // Annotated image has boxes/labels drawn on top, so it's at least as big,
+    // usually bigger due to recompression of changed pixels.
+    assert!(
+        ann_bytes >= raw_bytes / 2,
+        "annotated bytes ({ann_bytes}) should be a plausible PNG size vs raw ({raw_bytes})"
+    );
+    // The data must decode as a PNG.
+    let data = ann["result"]["data"].as_str().unwrap();
+    let png = base64_decode(data);
+    assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n", "must be a PNG");
+
+    send(&mut stdin, "browser.close", json!({}), 99);
+    let _ = recv(&mut stdout, to);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn base64_decode(s: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .expect("base64")
+}

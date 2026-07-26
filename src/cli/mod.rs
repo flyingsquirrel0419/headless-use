@@ -112,6 +112,12 @@ pub struct ServeArgs {
     /// Always block navigation to these hosts (repeatable, takes precedence).
     #[arg(long = "deny-host", value_name = "HOST")]
     pub deny_hosts: Vec<String>,
+    /// Cursor travel to click/hover targets: `instant` (default here) or
+    /// `smooth`. Smooth emits intermediate mouse-move events, which costs
+    /// travel time per click but drives hover-dependent UI and looks natural
+    /// in a viewer.
+    #[arg(long, default_value = "instant")]
+    pub cursor_motion: String,
 }
 
 /// Run args (one-shot).
@@ -126,6 +132,10 @@ pub struct RunArgs {
     /// Full-page screenshot.
     #[arg(long)]
     pub full_page: bool,
+    /// Annotate the screenshot with bounding boxes + ref tokens for every
+    /// observed element (interactive in green, visual widgets in orange).
+    #[arg(long)]
+    pub annotate: bool,
     /// Screenshot only this element's region by reference (e.g. @g1:e3).
     #[arg(long)]
     pub element: Option<String>,
@@ -184,6 +194,11 @@ pub struct ViewArgs {
     /// Always block navigation to these hosts (repeatable, takes precedence).
     #[arg(long = "deny-host", value_name = "HOST")]
     pub deny_hosts: Vec<String>,
+    /// Cursor travel to click/hover targets: `smooth` (default here) or
+    /// `instant`. `view` exists to be watched, so the cursor walks to its
+    /// target by default.
+    #[arg(long, default_value = "smooth")]
+    pub cursor_motion: String,
 }
 
 /// Build a navigation policy from allow/deny host lists.
@@ -192,5 +207,61 @@ pub fn build_policy(allow: &[String], deny: &[String]) -> crate::security::Polic
     crate::security::Policy {
         allow_hosts: allow.to_vec(),
         deny_hosts: deny.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::CursorMotion;
+
+    fn parse_from(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    /// `view` exists to be watched, so its cursor walks to the target.
+    /// `serve` drives automation, so it stays instant. Getting these backwards
+    /// would silently add ~220ms to every click in CI.
+    #[test]
+    fn cursor_motion_defaults_differ_per_command() {
+        let cli = parse_from(&["headless-use", "view"]);
+        let Command::View(view) = cli.command else {
+            panic!("expected View");
+        };
+        assert_eq!(
+            CursorMotion::parse(&view.cursor_motion).unwrap(),
+            CursorMotion::smooth_default(),
+            "`view` must default to smooth"
+        );
+
+        let cli = parse_from(&["headless-use", "serve"]);
+        let Command::Serve(serve) = cli.command else {
+            panic!("expected Serve");
+        };
+        assert_eq!(
+            CursorMotion::parse(&serve.cursor_motion).unwrap(),
+            CursorMotion::Instant,
+            "`serve` must default to instant"
+        );
+    }
+
+    #[test]
+    fn cursor_motion_flag_overrides_the_default() {
+        let cli = parse_from(&["headless-use", "view", "--cursor-motion", "instant"]);
+        let Command::View(view) = cli.command else {
+            panic!("expected View");
+        };
+        assert_eq!(
+            CursorMotion::parse(&view.cursor_motion).unwrap(),
+            CursorMotion::Instant
+        );
+
+        let cli = parse_from(&["headless-use", "serve", "--cursor-motion", "smooth"]);
+        let Command::Serve(serve) = cli.command else {
+            panic!("expected Serve");
+        };
+        assert!(CursorMotion::parse(&serve.cursor_motion)
+            .unwrap()
+            .is_smooth());
     }
 }

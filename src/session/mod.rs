@@ -293,6 +293,22 @@ impl Session {
         Ok(obs)
     }
 
+    /// Observe with an optional mode filter.
+    ///
+    /// `interactive-only` excludes non-standard "visual widgets" (canvas, svg,
+    /// cursor:pointer divs) so the agent gets only standard interactive
+    /// elements. `compact`/`full`/`None` include visual widgets too.
+    pub async fn observe_with_mode(&self, mode: Option<&str>) -> Result<Observation, BrowserError> {
+        let mut obs = self.observe().await?;
+        if matches!(mode, Some("interactive-only")) {
+            obs.elements.retain(|e| !e.visual);
+            // Re-stamp the cached observation too so a subsequent click on a
+            // surviving ref resolves against the filtered set.
+            *self.last_observation.lock().await = Some(obs.clone());
+        }
+        Ok(obs)
+    }
+
     /// The last cached observation (if any).
     pub async fn last_observation(&self) -> Option<Observation> {
         self.last_observation.lock().await.clone()
@@ -622,6 +638,25 @@ impl Session {
             let _ = t.lock().await.save_screenshot(seq, &data).await;
         }
         Ok(data)
+    }
+
+    /// Capture a screenshot with bounding boxes + ref tokens drawn over every
+    /// observed element. See `observe::annotate` for the rendering details.
+    ///
+    /// This re-runs observe (so the boxes match the current DOM, not a stale
+    /// cache) and annotates the freshly captured PNG. Visual widgets (canvas,
+    /// svg, cursor:pointer divs) are included so a vision agent can locate
+    /// non-standard clickable surfaces too.
+    pub async fn screenshot_annotated(&self, full_page: bool) -> Result<Vec<u8>, BrowserError> {
+        let obs = self.observe_with_mode(None).await?;
+        let png = self.page.screenshot(full_page, None).await?;
+        let vp = crate::cdp::Viewport {
+            width: obs.page.viewport.width,
+            height: obs.page.viewport.height,
+            device_scale_factor: obs.page.viewport.device_scale_factor,
+        };
+        crate::observe::annotate::annotate(&png, &obs.elements, &vp)
+            .map_err(|e| BrowserError::Other(format!("annotate: {e}")))
     }
 
     /// Compute the `Page.captureScreenshot` clip rectangle for a target, in

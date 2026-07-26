@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Visual widget test</title>
+<style>
+body { font-family: sans-serif; margin: 0; }
+#stage { position: relative; width: 600px; height: 400px; background: #eee; }
+canvas { display: block; }
+#fake-captcha {
+  position: absolute; left: 200px; top: 150px;
+  width: 200px; height: 70px; background: #f9f9f9;
+  border: 1px solid #d3d3d3; display: flex; align-items: center; gap: 8px;
+  padding: 0 10px; cursor: pointer;
+}
+#fake-captcha .box { width: 28px; height: 28px; border: 1px solid #888; background: #fff; }
+#clickable-div {
+  position: absolute; left: 80px; top: 60px; width: 100px; height: 40px;
+  background: #cde; cursor: pointer; line-height: 40px; text-align: center;
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv" width="600" height="400"></canvas>
+  <div id="clickable-div" onclick="window.__div_clicked=true">Click me</div>
+  <div id="fake-captcha" onclick="window.__captcha_clicked=true">
+    <div class="box"></div>
+    <span>I'm not a robot</span>
+  </div>
+</div>
+<script>
+window.__captcha_clicked = false;
+window.__div_clicked = false;
+// Draw something on the canvas so it has content.
+var c = document.getElementById('cv');
+var ctx = c.getContext('2d');
+ctx.fillStyle = '#bcd';
+ctx.fillRect(0, 0, 600, 400);
+ctx.fillStyle = '#345';
+ctx.font = '20px sans-serif';
+ctx.fillText('canvas game area', 180, 200);
+</script>
+</body>
+</html>
