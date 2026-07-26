@@ -51,6 +51,11 @@ pub struct LaunchOptions {
     pub extra_args: Vec<String>,
     /// Port for the CDP HTTP/WS endpoint. 0 = auto-pick a free port.
     pub port: u16,
+    /// Suppress the signals that identify `--headless=new` as automated, so bot
+    /// checks (Cloudflare Turnstile and friends) see an ordinary Chrome. Costs
+    /// nothing at runtime and keeps headless — see [`crate::browser::stealth`]
+    /// for what it changes and why, including the two launch defaults it drops.
+    pub stealth: bool,
 }
 
 impl Default for LaunchOptions {
@@ -69,6 +74,7 @@ impl Default for LaunchOptions {
             no_sandbox: false,
             extra_args: Vec::new(),
             port: 0,
+            stealth: false,
         }
     }
 }
@@ -85,6 +91,17 @@ impl LaunchOptions {
 ///
 /// Order: `HEADLESS_USE_BROWSER_PATH` env, then the candidates on `PATH`.
 pub fn discover_browser() -> Result<PathBuf, BrowserError> {
+    discover_browser_with(false)
+}
+
+/// Discover a browser executable, optionally skipping the headless shells.
+///
+/// `chrome-headless-shell` is a stripped build: no `window.chrome`, no PDF
+/// plugin entries, no proprietary codecs, and a product name that says
+/// `HeadlessChrome`. Those are exactly the properties a bot check reads, and
+/// none of them can be restored from JS convincingly — so stealth mode asks for
+/// a full browser and only falls back to a shell if that is all there is.
+pub fn discover_browser_with(prefer_full_browser: bool) -> Result<PathBuf, BrowserError> {
     if let Ok(p) = std::env::var("HEADLESS_USE_BROWSER_PATH") {
         let path = PathBuf::from(&p);
         if path.is_file() {
@@ -94,9 +111,31 @@ pub fn discover_browser() -> Result<PathBuf, BrowserError> {
             "HEADLESS_USE_BROWSER_PATH={p} does not exist"
         )));
     }
-    for name in BROWSER_CANDIDATES {
-        if let Some(p) = which(name) {
+    let is_shell = |name: &str| name.contains("headless-shell");
+    if prefer_full_browser {
+        for name in BROWSER_CANDIDATES.iter().filter(|n| !is_shell(n)) {
+            if let Some(p) = which(name) {
+                return Ok(p);
+            }
+        }
+        if let Some(p) = BROWSER_CANDIDATES
+            .iter()
+            .filter(|n| is_shell(n))
+            .find_map(|n| which(n))
+        {
+            tracing::warn!(
+                exe = %p.display(),
+                "stealth: only a headless shell was found; it is missing browser APIs \
+                 (window.chrome, PDF plugins, proprietary codecs) that bot checks read. \
+                 Install full Chrome/Chromium for reliable stealth."
+            );
             return Ok(p);
+        }
+    } else {
+        for name in BROWSER_CANDIDATES {
+            if let Some(p) = which(name) {
+                return Ok(p);
+            }
         }
     }
     Err(BrowserError::BrowserNotFound(format!(
@@ -143,6 +182,10 @@ pub struct BrowserProcess {
     xvfb_display: Option<String>,
     /// PID of the Xvfb server we started, so cleanup kills exactly that one.
     xvfb_pid: Option<u32>,
+    /// Resolved stealth identity when launched with `stealth: true`. Held here
+    /// because the per-page half of stealth (UA override, pre-load script) needs
+    /// the same version-derived values the launch flags were built from.
+    stealth: Option<crate::browser::stealth::StealthProfile>,
 }
 
 impl BrowserProcess {
@@ -150,7 +193,14 @@ impl BrowserProcess {
     pub async fn launch(opts: LaunchOptions) -> Result<Self, BrowserError> {
         let exe = match opts.browser_path.clone() {
             Some(p) if p.is_file() => p,
-            _ => discover_browser()?,
+            _ => discover_browser_with(opts.stealth)?,
+        };
+
+        // Built before the flag list because the UA flag comes from it.
+        let stealth = if opts.stealth {
+            Some(crate::browser::stealth::StealthProfile::detect(&exe).await)
+        } else {
+            None
         };
 
         let port = if opts.port == 0 {
@@ -210,11 +260,25 @@ impl BrowserProcess {
         // stays on.
         args.push("--disable-features=Translate".into());
         args.push("--font-render-hinting=none".into());
-        args.push("--hide-scrollbars".into());
+        // Scrollbars are hidden so screenshots match the CSS viewport — but a
+        // zero-width scrollbar shows up as `innerWidth == clientWidth`, which is
+        // a documented headless check, so stealth keeps them.
+        if !opts.stealth {
+            args.push("--hide-scrollbars".into());
+        }
         // Graphics: software GL to avoid GPU in headless servers.
-        args.push("--disable-gpu".into());
+        // `--disable-gpu` shuts the GPU process down entirely, which also takes
+        // WebGL with it; a page with no WebGL context at all is a louder signal
+        // than a software renderer (whose driver strings stealth.js rewrites).
+        // So stealth keeps ANGLE/SwiftShader and skips --disable-gpu.
+        if !opts.stealth {
+            args.push("--disable-gpu".into());
+        }
         args.push("--use-gl=angle".into());
         args.push("--use-angle=swiftshader".into());
+        if let Some(profile) = &stealth {
+            args.extend(profile.launch_args());
+        }
 
         if opts.incognito {
             args.push("--incognito".into());
@@ -265,6 +329,7 @@ impl BrowserProcess {
             owns_temp,
             xvfb_display,
             xvfb_pid,
+            stealth,
         };
 
         // Wait for CDP HTTP to be ready.
@@ -485,6 +550,11 @@ impl BrowserProcess {
     /// The Xvfb display this process runs on (`:N`), if `--compat xvfb`.
     pub fn xvfb_display(&self) -> Option<&str> {
         self.xvfb_display.as_deref()
+    }
+
+    /// The stealth identity this process was launched with, if any.
+    pub fn stealth(&self) -> Option<&crate::browser::stealth::StealthProfile> {
+        self.stealth.as_ref()
     }
 }
 

@@ -72,6 +72,13 @@ impl Page {
                 std::time::Duration::from_secs(10),
             )
             .await?;
+        // Stealth runs last on purpose: pre-load scripts execute in
+        // registration order, and part of stealth's job is to make the
+        // collector's `fetch`/console wrappers report native source. Patching
+        // them before they exist would do nothing.
+        if let Some(profile) = browser.stealth() {
+            profile.apply_to_page(&page).await?;
+        }
         Ok(page)
     }
 

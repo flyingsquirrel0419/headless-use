@@ -91,6 +91,10 @@ cargo install --path .
 1. `HEADLESS_USE_BROWSER_PATH` env var
 2. `chrome-headless-shell`, `chromium`, `google-chrome`, `google-chrome-stable` on `PATH`
 
+With `--stealth` the order is inverted: the headless shells are tried last,
+because they are missing browser APIs that bot checks read (see
+[Stealth mode](#stealth-mode)).
+
 Override explicitly:
 
 ```bash
@@ -120,6 +124,7 @@ docker run --rm --network host headless-use \
 - **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
 - **Screenshots**: viewport, full-page, element-region (`--element @eN`)
 - **Dewiggle**: reverse per-glyph vertical wobble in animated text CAPTCHAs using **pixels only** — no answer arrays, no DOM text/props. Captures N frames, realigns each column to its neutral baseline, and averages them into a sharpened image plus optional per-glyph crops. `headless-use dewiggle --url ... --out out.png --chars 6`
+- **Stealth**: `--stealth` keeps `--headless=new` but stops it announcing itself — see [Stealth mode](#stealth-mode)
 - **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
 - **Trace + Replay**: `actions.jsonl`, `report.html` (self-contained, screenshots embedded), forced secret redaction at the writer boundary, and `replay` to re-execute a recorded trace
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
@@ -183,6 +188,46 @@ headless-use
 # Reverse the wobble in an animated text CAPTCHA, saving 6 per-glyph crops.
 headless-use dewiggle --url https://example.com/captcha --out out.png --chars 6 --frames 12
 ```
+
+### Stealth mode
+
+Sites behind a bot check (Cloudflare Turnstile and friends) hand headless Chrome
+a challenge that headful Chrome walks straight past. `--stealth` closes the gap
+without paying for a real display — it works on `launch`, `serve`, `run`, `view`
+and `mcp`:
+
+```bash
+headless-use run --url https://example.com/protected --screenshot out.png --stealth
+headless-use serve --stealth --no-sandbox
+```
+
+What it changes, in the order that matters:
+
+| Layer | Signal removed |
+| --- | --- |
+| Launch flags | `navigator.webdriver` (via `--disable-blink-features=AutomationControlled`), `HeadlessChrome/…` in the UA string |
+| `Emulation.setUserAgentOverride` | `Sec-CH-UA: "HeadlessChrome"` client-hint headers and `navigator.userAgentData` — the UA flag alone does **not** fix these |
+| Pre-load script | SwiftShader WebGL driver strings, empty `navigator.plugins`, missing `window.chrome`, `outerHeight == innerHeight`, a screen the size of the window, `notifications: denied` |
+| Auto-attach | The same treatment inside cross-origin iframes, which is where a challenge widget runs |
+
+The user agent is derived from the browser's own version, so the UA, the
+client-hint brand list, and the engine all agree. Every replacement function
+reports native source (`function … () { [native code] }`), including this tool's
+own console/network collectors — a wrapped `fetch` is itself a signal.
+
+Notes:
+
+- Stealth prefers a **full** Chrome/Chromium over `chrome-headless-shell`. The
+  shell has no `window.chrome`, no PDF plugin entries, and no proprietary codecs;
+  those cannot be faked convincingly. If only a shell is present it is used, with
+  a warning.
+- Two defaults change under `--stealth`: scrollbars are no longer hidden (a
+  zero-width scrollbar is a documented check) and the GPU process stays up so
+  WebGL exists (no WebGL at all is louder than a software renderer).
+- Fingerprint suppression is an arms race. This removes the signals that make a
+  headless browser trivially identifiable; it is not a guarantee against every
+  detector. If a site still challenges you, `--compat xvfb` runs a real headful
+  browser under Xvfb at roughly double the memory.
 
 ### Live viewer
 

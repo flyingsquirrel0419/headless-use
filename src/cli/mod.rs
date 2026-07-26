@@ -72,6 +72,15 @@ pub struct LaunchArgs {
     /// Disable the sandbox (required as root; use only in trusted envs).
     #[arg(long)]
     pub no_sandbox: bool,
+    /// Hide headless automation signals so bot checks (Cloudflare Turnstile and
+    /// friends) treat the browser as an ordinary Chrome: no `navigator.webdriver`,
+    /// no `HeadlessChrome` in the UA or Sec-CH-UA headers, real-looking WebGL,
+    /// plugins and window geometry — including inside cross-origin iframes.
+    /// Keeps `--headless=new`, so none of the Xvfb overhead. Prefers a full
+    /// Chrome over `chrome-headless-shell`, stops hiding scrollbars, and keeps
+    /// the GPU process up so WebGL exists.
+    #[arg(long)]
+    pub stealth: bool,
     /// CDP port. 0 = auto.
     #[arg(long, default_value_t = 0)]
     pub port: u16,
@@ -98,6 +107,7 @@ impl LaunchArgs {
             no_sandbox: self.no_sandbox,
             extra_args: Vec::new(),
             port: self.port,
+            stealth: self.stealth,
         })
     }
 }

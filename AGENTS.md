@@ -43,7 +43,7 @@ Use the `[Decision Log]` format for new features, complex logic, or structural c
 
 ```
 src/
-├── browser/   process launch + CDP transport + Page
+├── browser/   process launch + CDP transport + Page + stealth (headless signal suppression)
 ├── cdp/       WebSocket JSON-RPC client, typed CDP types, errors
 ├── input/     mouse + keyboard engines (real Input.* events)
 ├── observe/   AX/DOM extraction + semantic @eN references

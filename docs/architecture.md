@@ -41,6 +41,37 @@ knows raw CDP JSON; everything above it works with typed Rust.
 - 다른 대안 대신 이 방식을 선택한 이유: 정리 책임 단일화, 의존성 최소화.
 - 장점, 단점 및 영향: CDP 프로토콜 처리 부담 증가, 대신 완전한 제어권.
 
+## Stealth mode (`browser/stealth.rs`)
+
+Optional (`--stealth`, `LaunchOptions::stealth`). Off by default, and when off no
+stealth code path executes at all. It suppresses the signals that identify
+`--headless=new` in three places, because no single place can cover them:
+
+1. **Launch flags** (`StealthProfile::launch_args`) — process-wide, so they also
+   apply to frames we never attach to: `--disable-blink-features=Automation
+   Controlled` (removes `navigator.webdriver` at the source),
+   `--user-agent=…` built from the browser's real version,
+   `--enable-unsafe-swiftshader` (keeps WebGL alive on software GL).
+   Two normal defaults are dropped here: `--hide-scrollbars` and `--disable-gpu`.
+2. **`Emulation.setUserAgentOverride`** on the page session — the only way to fix
+   `Sec-CH-UA` client hints and `navigator.userAgentData`, which are generated
+   from Chrome's own brand list (`HeadlessChrome`) regardless of `--user-agent`.
+   Applied on a page session it covers the whole WebContents, subframes included.
+3. **`stealth.js` pre-load script** — patches what is left in JS (WebGL driver
+   strings, `navigator.plugins`, `window.chrome`, window/screen geometry,
+   notification permission), guarding every patch behind a check of the real
+   value, and making every replacement report native source via one wrapped
+   `Function.prototype.toString`. It runs *after* `collectors.js` so it can also
+   make that file's `fetch`/console wrappers report native source.
+
+Cross-origin iframes are separate CDP targets, so (3) does not reach them —
+which is precisely where a challenge widget runs. Stealth therefore turns on
+`Target.setAutoAttach` with `waitForDebuggerOnStart` and patches each child
+session before resuming it.
+
+Invariant: every auto-attached target must be resumed on every path, including
+injection failure. A target left paused hangs the frame that owns it.
+
 ## CDP transport
 
 `CdpClient` owns one WebSocket. It assigns monotonic request ids, matches

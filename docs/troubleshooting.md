@@ -47,3 +47,29 @@ the viewport matches (`--viewport 1280x720`).
 error[STALE_REFERENCE]: stale reference @e7
 ```
 Run `observe` again; the page changed since the last observation.
+
+## A bot check / CAPTCHA appears only in headless
+
+The page hands headless Chrome a challenge that headful Chrome passes silently.
+Add `--stealth`, which removes the headless signals (`navigator.webdriver`,
+`HeadlessChrome` in the UA and `Sec-CH-UA`, SwiftShader WebGL strings, empty
+plugins, window-sized screen) while staying headless. See
+[Stealth mode](../README.md#stealth-mode).
+
+If it still challenges you:
+
+- **Check the browser.** `--stealth` warns if it could only find
+  `chrome-headless-shell`; that build is missing APIs bot checks read. Install
+  full Chrome/Chromium, or point at it with `--browser-path`.
+- **Confirm the signals are actually gone** — `page.evaluate` on the loaded page:
+  ```
+  JSON.stringify({wd: navigator.webdriver, ua: navigator.userAgent,
+                  brands: navigator.userAgentData.brands})
+  ```
+  None of these may contain `Headless`, and `wd` must be `false`.
+- **An interactive checkbox still has to be clicked.** Stealth only removes the
+  browser's fingerprint; a widget that asks for a click needs one. The widget
+  lives in a cross-origin iframe, where element references are limited — click by
+  coordinate from a screenshot.
+- **Fall back to a real display**: `--compat xvfb` runs a headful browser under
+  Xvfb (needs `Xvfb` installed, roughly double the memory).

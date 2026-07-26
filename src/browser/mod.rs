@@ -12,10 +12,12 @@
 pub mod error;
 pub mod launch;
 pub mod page;
+pub mod stealth;
 
 pub use error::BrowserError;
 pub use launch::{discover_browser, BrowserProcess, LaunchOptions};
 pub use page::Page;
+pub use stealth::StealthProfile;
 
 use std::sync::Arc;
 
@@ -43,6 +45,14 @@ impl Browser {
             proc: Arc::new(proc),
             client,
         })
+    }
+
+    /// The stealth identity this browser was launched with, if any. `Page`
+    /// applies it per target: the pre-load script and the UA/client-hint
+    /// override both need a page session, which the browser-level connection
+    /// does not have.
+    pub fn stealth(&self) -> Option<&StealthProfile> {
+        self.proc.stealth()
     }
 
     /// The browser-level CDP client (used for target management).

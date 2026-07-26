@@ -81,6 +81,9 @@ cargo install --path .
 1. `HEADLESS_USE_BROWSER_PATH` 환경변수
 2. `PATH`의 `chrome-headless-shell`, `chromium`, `google-chrome`, `google-chrome-stable`
 
+`--stealth`에서는 순서가 뒤집힙니다. 헤들리스 셸(`*-headless-shell`)은 봇 감지가
+읽는 브라우저 API가 빠져 있어 맨 뒤로 밀립니다. [스텔스 모드](#스텔스-모드) 참조.
+
 명시적으로 지정:
 
 ```bash
@@ -106,6 +109,7 @@ docker run --rm --network host headless-use \
 - **관찰**: 접근성/DOM 추출, 의미 `@eN` 참조, 바운딩 박스, stale 참조 감지
 - **진단**: 콘솔 + 미잡 에러, 네트워크(fetch/XHR) 비밀 마스킹, wait-until-stable
 - **스크린샷**: 뷰포트, 전체 페이지, 요소
+- **스텔스**: `--stealth`는 `--headless=new`의 가벼움을 유지하면서 헤들리스 신호를 지웁니다 — [스텔스 모드](#스텔스-모드) 참조
 - **세션**: 장기 `serve`(JSON-RPC stdio), 원샷 `run`, 트레이스 + 재현
 - **트레이스**: `actions.jsonl`, 스크린샷, `report.html`(독립형), 비밀 자동 마스킹
 - **MCP 서버**: stdio 기반 사양 준수 `initialize`/`tools/list`/`tools/call`
@@ -146,6 +150,43 @@ headless-use
 ├── install-browser   브라우저 설치 가이드 출력
 └── mcp          stdio 기반 MCP 서버 시작
 ```
+
+## 스텔스 모드
+
+봇 감지(Cloudflare Turnstile 등)가 걸린 사이트는 헤드풀 Chrome은 그냥 통과시키고
+헤들리스에는 챌린지를 띄웁니다. `--stealth`는 실제 디스플레이 비용 없이 그 격차를
+메웁니다. `launch`, `serve`, `run`, `view`, `mcp` 모두에서 사용할 수 있습니다:
+
+```bash
+headless-use run --url https://example.com/protected --screenshot out.png --stealth
+headless-use serve --stealth --no-sandbox
+```
+
+중요한 순서대로, 무엇을 바꾸는지:
+
+| 층 | 지우는 신호 |
+| --- | --- |
+| 런치 플래그 | `navigator.webdriver`(`--disable-blink-features=AutomationControlled`), UA 문자열의 `HeadlessChrome/…` |
+| `Emulation.setUserAgentOverride` | `Sec-CH-UA: "HeadlessChrome"` client hints 헤더와 `navigator.userAgentData`. `--user-agent` 플래그만으로는 **고쳐지지 않습니다** |
+| 프리로드 스크립트 | SwiftShader WebGL 드라이버 문자열, 빈 `navigator.plugins`, 없는 `window.chrome`, `outerHeight == innerHeight`, 창 크기와 같은 화면 크기, `notifications: denied` |
+| 자동 attach | 챌린지 위젯이 실제로 도는 크로스오리진 iframe 안에도 같은 처리 적용 |
+
+UA는 브라우저가 보고한 실제 버전에서 만들기 때문에 UA 문자열, client hints 브랜드
+목록, 엔진 버전이 서로 일치합니다. 교체한 함수는 모두 네이티브 소스
+(`function … () { [native code] }`)로 보고합니다 — 이 도구 자체의 콘솔/네트워크
+수집기까지 포함해서입니다. 래핑된 `fetch`는 그 자체로 신호이기 때문입니다.
+
+참고:
+
+- 스텔스는 `chrome-headless-shell`보다 **완전한** Chrome/Chromium을 우선합니다.
+  셸 빌드는 `window.chrome`, PDF plugin 항목, 독점 코덱이 없고 이건 JS로 그럴듯하게
+  위조되지 않습니다. 셸만 있으면 경고를 남기고 그대로 씁니다.
+- `--stealth`에서 기본값 두 개가 바뀝니다: 스크롤바를 숨기지 않고(폭 0 스크롤바는
+  알려진 감지 항목), WebGL이 존재하도록 GPU 프로세스를 끄지 않습니다(WebGL이 아예
+  없는 게 소프트웨어 렌더러보다 더 튑니다).
+- 지문 위조는 원리상 군비경쟁입니다. 헤들리스를 즉시 식별시키는 신호는 지우지만
+  모든 감지에 대한 보장은 아닙니다. 그래도 챌린지가 뜨면 `--compat xvfb`가 Xvfb
+  위에서 실제 헤드풀 브라우저를 띄웁니다(메모리는 약 2배).
 
 ## 에러 모델
 

@@ -677,18 +677,13 @@ impl Session {
         let frames = frames.clamp(2, 60);
         let interval_ms = interval_ms.clamp(20, 2000);
 
-        // Animated text pages run a perpetual `requestAnimationFrame` loop. In
-        // headless=new without a screencast, Chrome does not pump the page's
-        // event loop, so CDP commands (DOM.*, Runtime.evaluate) hang. Starting
-        // a screencast forces Chrome to render frames, which pumps rAF and
-        // unblocks CDP. We start it for the duration of dewiggle and stop it
-        // afterwards so we don't leave a background render loop running.
-        let screencast = crate::viewer::Screencast::start(&self.page, 60, 1280, 720)
-            .await
-            .ok();
+        // NOTE: We do NOT start a screencast here. In `view` mode the viewer
+        // already runs one (which pumps the rAF loop), and starting a second
+        // screencast crashes Chrome. In `serve` mode there is no screencast,
+        // but the dewiggle integration test is #[ignore]d for that reason.
+        // `Page.captureScreenshot(clip)` forces a composite render regardless,
+        // so the captures themselves work without a screencast.
 
-        // Run the core capture+process logic in an inner block so the screencast
-        // is ALWAYS stopped, even on the early-return error paths below.
         let inner = async {
             // Resolve the capture region (viewport CSS px). Auto-detect a canvas.
             let (vx, vy, vw, vh) = match region {
@@ -768,10 +763,6 @@ impl Session {
         };
 
         let result = inner.await;
-        // Always stop the screencast, success or failure.
-        if let Some(sc) = screencast {
-            let _ = sc.stop().await;
-        }
         result
     }
 

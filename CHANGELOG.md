@@ -6,6 +6,55 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — stealth mode (`--stealth`)
+
+- **`--stealth` keeps `--headless=new` but stops it announcing itself**, so sites
+  behind a bot check (Cloudflare Turnstile and friends) stop serving a challenge
+  that only headless browsers get. Available on `launch`, `serve`, `run`, `view`
+  and `mcp`, and as `LaunchOptions::stealth`. Off by default; when off, no
+  stealth code runs.
+- Three layers, because no single one covers everything:
+  - **Launch flags** (process-wide, so they reach frames we never attach to):
+    `--disable-blink-features=AutomationControlled` removes
+    `navigator.webdriver` at the source rather than patching it from JS, and
+    `--user-agent` — built from the browser's own reported version — drops
+    `HeadlessChrome/…` from every request.
+  - **`Emulation.setUserAgentOverride`** per page: the only way to fix
+    `Sec-CH-UA` client hints and `navigator.userAgentData`, which Chrome
+    generates from its own brand list (`HeadlessChrome`) no matter what
+    `--user-agent` says. Applied on a page session it covers the whole
+    WebContents, subframes included.
+  - **A pre-load script** for the JS-only surface: SwiftShader WebGL driver
+    strings, an empty `navigator.plugins`, a missing `window.chrome`,
+    `outerHeight == innerHeight`, a screen the size of the window, and
+    `notifications: denied`. Every patch is guarded by a check of the real value,
+    and every replacement function reports native source through a single wrapped
+    `Function.prototype.toString` — an unnecessary override is one more accessor
+    a detector can catch lying.
+- **Cross-origin iframes are covered.** They are separate CDP targets, so a page's
+  pre-load script never reaches them — and that is exactly where a challenge
+  widget runs its fingerprinting. Stealth enables `Target.setAutoAttach` with
+  `waitForDebuggerOnStart` and patches each child session before resuming it.
+- **This tool's own instrumentation is no longer a signal.** `collectors.js` wraps
+  `fetch`, XHR and the console methods and parks buffers on `window`; a wrapped
+  `fetch.toString()` is not native source. The stealth script (registered after
+  the collector, so it runs after it) restores native source for those wrappers
+  and makes the `__hu_*` buffers non-enumerable.
+- **Browser choice matters, so stealth changes it**: `chrome-headless-shell` is
+  tried last, since it ships without `window.chrome`, PDF plugin entries or
+  proprietary codecs — properties JS cannot fake convincingly. A shell is still
+  used if it is all that is installed, with a warning.
+- **Two launch defaults change under `--stealth`**: scrollbars are no longer
+  hidden (a zero-width scrollbar shows up as `innerWidth == clientWidth`, a
+  documented check), and `--disable-gpu` is dropped with
+  `--enable-unsafe-swiftshader` added so WebGL still exists — a page with no
+  WebGL context is a louder signal than a software renderer.
+- Tests: `tests/js/stealth_dom.mjs` runs the real pre-load script against a
+  worst-case fake headless DOM under `node` (skipped when `node` is absent) and
+  asserts both the patched values and that the patches report native source;
+  browser-level tests assert what a page actually observes, including that an
+  auto-attached cross-origin frame is resumed rather than left paused.
+
 ### Changed — live viewer
 
 - **New cursor design.** The overlay is now a solid white pointer with a dark
