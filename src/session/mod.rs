@@ -55,6 +55,10 @@ pub struct Session {
     /// Host allow/deny navigation policy. When set, open/goto/reload consult it
     /// and return [`BrowserError::NavigationBlocked`] for disallowed hosts.
     policy: Arc<tokio::sync::Mutex<Policy>>,
+    /// How the cursor travels to click/hover targets. A plain value, not a
+    /// lock: it is chosen once when the session is built and never mutated, so
+    /// there is nothing to guard.
+    cursor_motion: crate::input::CursorMotion,
 }
 
 impl Session {
@@ -80,6 +84,7 @@ impl Session {
                 network_tracker::NetworkTracker::new(),
             )),
             policy: Arc::new(tokio::sync::Mutex::new(Policy::default())),
+            cursor_motion: crate::input::CursorMotion::default(),
         };
         // Start CDP network tracking BEFORE any navigation so we don't miss
         // requestWillBeSent for requests already in flight.
@@ -181,6 +186,25 @@ impl Session {
     pub async fn with_policy_async(self, policy: Policy) -> Self {
         *self.policy.lock().await = policy;
         self
+    }
+
+    /// Choose how the cursor travels to click/hover targets.
+    ///
+    /// [`CursorMotion::Smooth`](crate::input::CursorMotion::Smooth) makes the
+    /// cursor walk the path, emitting real intermediate `mouseMoved` events —
+    /// visible in the live viewer, and enough to open hover menus that need
+    /// movement. It costs the travel time on every click, so automation
+    /// surfaces leave the default [`CursorMotion::Instant`](crate::input::CursorMotion::Instant).
+    ///
+    /// Synchronous and lock-free: `cursor_motion` is a plain field.
+    pub fn with_cursor_motion(mut self, motion: crate::input::CursorMotion) -> Self {
+        self.cursor_motion = motion;
+        self
+    }
+
+    /// The configured cursor motion profile.
+    pub fn cursor_motion(&self) -> crate::input::CursorMotion {
+        self.cursor_motion
     }
 
     /// Current cursor position (shared state, persistent across mouse() calls).
@@ -372,8 +396,20 @@ impl Session {
         } else {
             let name_json = serde_json::to_string(&el.name).unwrap_or_else(|_| "\"\"".into());
             let tag = tag_for_query(&el.tag_name);
+            // [Decision Log] — querySelector 인자 안전 주입
+            // - 목적과 의도: tag_for_query가 `a[href], [role='link']`처럼 작은따옴표를
+            //   포함하는 선택자를 반환한다. 이전에는 이 선택자를 JS 문자열 리터럴
+            //   안의 작은따옴표 영역(`'{tag}'`)에 직접 끼워 넣었기 때문에 안쪽
+            //   작은따옴표가 문자열을 일찍 닫아버려 `SyntaxError: missing ) after
+            //   argument list`가 발생했다. (구글 결과 페이지의 링크 클릭이 전부
+            //   실패한 원인.)
+            // - 검토한 주요 대안: 선택자에서 작은따옴표를 제거, 큰따옴표로 래핑.
+            // - 선택한 방식: name과 동일하게 tag도 JSON 문자열로 인코딩하여 JS
+            //   변수에 할당한 뒤 querySelectorAll에 전달.
+            // - 장점: 임의의 CSS 선택자 문자에 안전, name과 일관된 패턴.
+            let tag_json = serde_json::to_string(tag).unwrap_or_else(|_| "\"*\"".into());
             format!(
-                "(()=>{{const els=[...document.querySelectorAll('{tag}')];const t={name_json};const e=els.find(x=>((x.innerText||x.textContent||'').trim()===t)||(x.getAttribute('aria-label')===t)||(x.getAttribute('placeholder')===t));if(!e)return null;e.scrollIntoView({{block:'center'}});const r=e.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
+                "(()=>{{const sel={tag_json};const els=[...document.querySelectorAll(sel)];const t={name_json};const e=els.find(x=>((x.innerText||x.textContent||'').trim()===t)||(x.getAttribute('aria-label')===t)||(x.getAttribute('placeholder')===t));if(!e)return null;e.scrollIntoView({{block:'center'}});const r=e.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
             )
         };
         let result = self.page.evaluate(&expr).await?;
@@ -420,6 +456,10 @@ impl Session {
             json!({ "x": x, "y": y, "button": button.as_cdp(), "count": count }),
         )
         .await;
+        // Walk the cursor over first when smooth motion is on. `Mouse::click`
+        // skips its own move once the cursor is already at the target, so this
+        // does not double-dispatch.
+        self.travel_to((x, y).into(), modifiers).await?;
         self.mouse()
             .click((x, y).into(), button, count, modifiers, hold)
             .await
@@ -429,9 +469,25 @@ impl Session {
     pub async fn hover(&self, target: ClickTarget) -> Result<(), BrowserError> {
         let (x, y) = self.resolve_click_point(target).await?;
         self.record_action("hover", json!({ "x": x, "y": y })).await;
-        self.mouse()
-            .move_to((x, y).into(), crate::input::Modifiers::NONE)
+        self.travel_to((x, y).into(), crate::input::Modifiers::NONE)
             .await
+    }
+
+    /// Move the cursor to `p` according to the session's
+    /// [`crate::input::CursorMotion`].
+    async fn travel_to(
+        &self,
+        p: crate::input::Point,
+        modifiers: crate::input::Modifiers,
+    ) -> Result<(), BrowserError> {
+        match self.cursor_motion {
+            crate::input::CursorMotion::Instant => self.mouse().move_to(p, modifiers).await,
+            crate::input::CursorMotion::Smooth { duration, steps } => {
+                self.mouse()
+                    .move_smooth(p, modifiers, duration, steps)
+                    .await
+            }
+        }
     }
 
     async fn resolve_click_point(&self, target: ClickTarget) -> Result<(f64, f64), BrowserError> {

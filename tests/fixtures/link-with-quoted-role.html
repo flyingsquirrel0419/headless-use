@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Quoted role link</title>
+<style>
+body { font-family: sans-serif; margin: 40px; }
+a { display: inline-block; padding: 12px 24px; margin: 8px; background:#eef; border-radius:6px; text-decoration:none; color:#114; }
+#hit { position: fixed; top: 8px; right: 8px; background:#063; color:#fff; padding:8px 12px; border-radius:4px; display:none; }
+</style>
+</head>
+<body>
+<div id="hit">clicked</div>
+<!-- A link whose accessible name contains a newline (like Google's search
+     results) and whose tag maps to the `a[href], [role='link']` selector.
+     This is the exact shape that broke click-by-reference on Google. -->
+<a id="target" href="#done" role="link" onclick="document.getElementById('hit').style.display='block';return false;">
+ChatGPT - 채팅GPT
+
+ChatGPT
+https://chatgpt.com
+</a>
+<a href="#other" role="link">other link</a>
+<script>
+window.__clicked = false;
+document.getElementById('target').addEventListener('click', () => { window.__clicked = true; });
+</script>
+</body>
+</html>

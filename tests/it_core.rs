@@ -214,3 +214,53 @@ async fn parse_ref_helper() {
     assert_eq!(parse_ref("@e5").unwrap(), 5);
     assert_eq!(parse_ref("e9").unwrap(), 9);
 }
+
+/// Regression: clicking a link whose tag maps to the `a[href], [role='link']`
+/// selector. `tag_for_query("a")` returns a selector containing single quotes,
+/// and the old code injected it straight into a JS single-quoted string
+/// literal (`querySelectorAll('{tag}')`), so the inner quotes closed the
+/// string early and `Runtime.evaluate` threw
+/// `SyntaxError: missing ) after argument list`. This reproduced on every
+/// Google search-result link. The name also contained a newline (like Google's
+/// multi-line result titles), so it exercises the name-based re-resolution
+/// path rather than the `#id` shortcut.
+#[tokio::test]
+async fn click_link_with_quoted_role_selector() {
+    let (s, srv) = session().await;
+    s.open(&srv.url("link-with-quoted-role.html"))
+        .await
+        .unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    let target = obs
+        .elements
+        .iter()
+        .find(|e| e.name.contains("ChatGPT"))
+        .map(|e| e.ref_id)
+        .expect("target link not found in observe output");
+
+    // Before the fix this returned a SyntaxError from Runtime.evaluate.
+    s.click(
+        ClickTarget::Ref {
+            id: target,
+            generation: None,
+        },
+        MouseButton::Left,
+        1,
+        Modifiers::NONE,
+        Duration::ZERO,
+    )
+    .await
+    .expect("clicking a link with a quoted-role selector must not throw a JS syntax error");
+
+    let clicked = s
+        .page()
+        .evaluate("window.__clicked")
+        .await
+        .unwrap()
+        .value()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(clicked, "the link's click handler should have fired");
+    s.shutdown().await;
+}
