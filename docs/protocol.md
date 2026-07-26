@@ -30,6 +30,43 @@ Newline-delimited JSON-RPC 2.0 over stdio (one JSON object per line).
 }
 ```
 
+## Click result
+
+`click` (MCP: `browser_click`) returns a report alongside `success`:
+
+```json
+{
+  "id": 14,
+  "result": {
+    "success": true,
+    "hit": { "element": "td#c3", "matched_target": true },
+    "effects": { "dom_mutations": 2, "network_requests": 0, "navigated": false, "focus_changed": false }
+  },
+  "jsonrpc": "2.0"
+}
+```
+
+- `hit` — pre-click `elementFromPoint` probe. `element` is a compact
+  descriptor of what the click point lands on (or `null` if nothing).
+  For ref clicks with a selector hint, `matched_target` says whether that is
+  the addressed element; when it is not, `occluded_by` names the intercepting
+  element. The click dispatches regardless — the report is advisory.
+  `hit` is `null` when the probe itself failed.
+- `effects` — what observably followed within the post-click window
+  (default 300 ms): `dom_mutations`, `network_requests`, `navigated`,
+  `focus_changed`. All zero/false means a **dead click** — nothing observable
+  happened. `effects` is `null` when the observation window is disabled.
+
+## Observe result flags
+
+- `truncated` — present (as `true`) at the top level of the `observe` result
+  when the listener-detection scan hit its candidate cap; some clickable
+  elements may be missing from the list. Omitted otherwise.
+- `opaqueInteractive` — per-element flag for interactive surfaces whose
+  interior targets cannot be enumerated (event-delegation containers over
+  inert children, canvas). Pick click coordinates from a screenshot instead
+  of expecting child refs.
+
 ## Protocol version
 
 `jsonrpc: "2.0"`. The tool set is versioned via the crate version; new methods are

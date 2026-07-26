@@ -65,11 +65,17 @@ pub async fn dispatch(
         "observe" => {
             let mode = params.get("mode").and_then(|v| v.as_str());
             let obs = session.observe_with_mode(mode).await?;
-            Ok(json!({
+            let mut resp = json!({
                 "page": obs.page,
                 "elements": obs.elements,
                 "generation": obs.generation,
-            }))
+            });
+            // Token-light: only present (as true) when the listener scan hit
+            // its candidate cap and some clickable elements may be missing.
+            if obs.truncated {
+                resp["truncated"] = json!(true);
+            }
+            Ok(resp)
         }
         // Run arbitrary JS in the page and return the value.
         //

@@ -29,7 +29,7 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_observe",
-        description: "Return the page's interactive elements with @eN references and the current generation. Prefer this over screenshots to save tokens.",
+        description: "Return the page's interactive elements with @eN references and the current generation. Prefer this over screenshots to save tokens. Elements flagged opaqueInteractive are clickable surfaces whose interior targets cannot be enumerated — pick coordinates from a screenshot instead of expecting child refs.",
         schema: json!({ "type": "object", "properties": {} }),
     },
     ToolDef {
@@ -62,7 +62,7 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_click",
-        description: "Click an element. Prefer a generation-bound reference (@g<gen>:e<num>) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click.",
+        description: "Click an element. Prefer a generation-bound reference (@g<gen>:e<num>) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click. Returns a hit/effects report: zero effects (no mutations/network/navigation/focus change) means a dead click.",
         schema: json!({
             "type": "object",
             "properties": {
