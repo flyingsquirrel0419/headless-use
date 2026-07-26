@@ -13,6 +13,7 @@
 //! determined statically, so the container is flagged `opaque_interactive`
 //! instead of pretending the children are not clickable.
 
+use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
 
 use crate::browser::Page;
@@ -22,8 +23,17 @@ use crate::observe::reference::ElementRef;
 const CLICK_LISTENER_TYPES: [&str; 4] = ["click", "mousedown", "pointerdown", "pointerup"];
 
 /// A container with at least this many element children (and a click
-/// listener) is treated as a delegation surface and flagged opaque.
+/// listener) is treated as a delegation surface and flagged opaque —
+/// but only when its subtree holds no independently interactive element
+/// (`inert_interior`). A container wrapping real links/buttons has an
+/// enumerable interior and must not carry the "not enumerable" hint.
 const DELEGATION_MIN_CHILDREN: u32 = 8;
+
+/// How many candidate listener queries run against CDP at once. Each
+/// candidate costs two round-trips (Runtime.evaluate +
+/// DOMDebugger.getEventListeners); running them serially made observe pay
+/// up to 150×2 sequential latencies on busy pages.
+const LISTENER_QUERY_CONCURRENCY: usize = 8;
 
 /// One candidate nominated by extract_elements.js's third pass.
 #[derive(Debug, serde::Deserialize)]
@@ -39,6 +49,10 @@ pub(crate) struct Candidate {
     pub height: i64,
     #[serde(rename = "childCount")]
     pub child_count: u32,
+    /// True when the candidate's subtree contains no independently
+    /// interactive element (see the third pass in extract_elements.js).
+    #[serde(rename = "inertInterior", default)]
+    pub inert_interior: bool,
     #[serde(rename = "selectorHint", default)]
     pub selector_hint: String,
 }
@@ -47,15 +61,28 @@ pub(crate) struct Candidate {
 ///
 /// Per-candidate failures (node detached, evaluate error) are skipped
 /// silently per spec — a partial observation beats none.
+///
+/// Queries run with bounded concurrency ([`LISTENER_QUERY_CONCURRENCY`])
+/// instead of serially; the promoted list is re-sorted by candidate index so
+/// output order stays deterministic regardless of completion order.
 pub(crate) async fn detect(page: &Page, candidates: &[Candidate]) -> Vec<ElementRef> {
-    let mut promoted = Vec::new();
-    for cand in candidates {
-        if let Some(has_listener) = candidate_has_click_listener(page, cand.index).await {
-            if has_listener {
-                promoted.push(to_element(cand));
-            }
-        }
+    if candidates.is_empty() {
+        // Nothing was nominated: no handles to release, no cleanup calls.
+        return Vec::new();
     }
+    let mut hits: Vec<&Candidate> = stream::iter(candidates.iter())
+        .map(|cand| async move {
+            match candidate_has_click_listener(page, cand.index).await {
+                Some(true) => Some(cand),
+                _ => None,
+            }
+        })
+        .buffer_unordered(LISTENER_QUERY_CONCURRENCY)
+        .filter_map(|c| async move { c })
+        .collect()
+        .await;
+    hits.sort_by_key(|c| c.index);
+    let promoted = hits.into_iter().map(to_element).collect();
     // Release the candidate handles and the objectGroup in one shot.
     let _ = page.evaluate_sync("window.__hu_cand__ = []; true").await;
     let _ = page
@@ -120,7 +147,11 @@ async fn candidate_has_click_listener(page: &Page, index: u32) -> Option<bool> {
 }
 
 fn to_element(cand: &Candidate) -> ElementRef {
-    let opaque = cand.child_count >= DELEGATION_MIN_CHILDREN;
+    // Opaque = delegation over an interior nothing else enumerates. A big
+    // container whose subtree holds real interactive elements (links,
+    // buttons) is NOT opaque: those children already appear in the
+    // observation, so the "interior targets not enumerable" hint would lie.
+    let opaque = cand.child_count >= DELEGATION_MIN_CHILDREN && cand.inert_interior;
     ElementRef {
         ref_id: 0,
         role: cand.role.clone(),

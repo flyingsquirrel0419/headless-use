@@ -161,7 +161,6 @@ pub struct Observation {
     pub nav_generation: u32,
     /// True when the listener-detection pass hit its candidate cap and some
     /// candidates were not scanned.
-    #[serde(default)]
     pub truncated: bool,
 }
 

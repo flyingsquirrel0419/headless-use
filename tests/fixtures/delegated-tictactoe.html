@@ -19,6 +19,17 @@
 <div id="refresh" style="width:40px;height:40px;border:1px solid #999">↻</div>
 <!-- Plain inert div: must NOT be promoted. -->
 <div id="inert" style="width:100px;height:30px">just text</div>
+<!-- Direct addEventListener on a plain div WITHOUT an id: selectorHint is
+     empty, so ref re-resolution must fall back to tag+name+geometry. -->
+<div class="noid" style="width:90px;height:30px;border:1px solid #66c">no-id button</div>
+<!-- Delegated click listener on a container wrapping ≥8 REAL links. The
+     interior IS enumerable (each link gets its own ref), so the container
+     must be promoted (listener present) but NOT flagged opaque. -->
+<div id="linkmenu">
+  <a href="#a1">alpha</a> <a href="#a2">bravo</a> <a href="#a3">charlie</a>
+  <a href="#a4">delta</a> <a href="#a5">echo</a> <a href="#a6">foxtrot</a>
+  <a href="#a7">golf</a> <a href="#a8">hotel</a> <a href="#a9">india</a>
+</div>
 <!-- Canvas: opaque interactive surface. -->
 <canvas id="game" width="120" height="80"></canvas>
 <script>
@@ -32,6 +43,13 @@
   });
   document.getElementById('refresh').addEventListener('click', () => {
     document.getElementById('status').textContent = 'refreshed';
+  });
+  document.querySelector('.noid').addEventListener('click', () => {
+    document.getElementById('status').textContent = 'noid clicked';
+  });
+  document.getElementById('linkmenu').addEventListener('click', (ev) => {
+    ev.preventDefault();
+    document.getElementById('status').textContent = 'menu: ' + ev.target.textContent;
   });
 </script>
 </body></html>

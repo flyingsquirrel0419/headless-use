@@ -215,6 +215,10 @@
       width: Math.round(r.width),
       height: Math.round(r.height),
       childCount: el.childElementCount,
+      // True when the SUBTREE contains no independently interactive element.
+      // A delegated container over inert children is opaque; a container
+      // wrapping real links/buttons is not — its interior IS enumerated.
+      inertInterior: el.querySelector(INTERACTIVE_SELECTOR) === null,
       selectorHint: el.id ? '#' + CSS.escape(el.id) : '',
     });
   }
