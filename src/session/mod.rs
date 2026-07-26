@@ -576,18 +576,28 @@ impl Session {
         .await;
 
         // Effects need the MutationObserver; install is idempotent. Baseline
-        // and hit test both run before any mouse movement.
+        // and hit test both run before any mouse movement. Like the hit test,
+        // this is a diagnostic layer: a CDP failure here degrades to
+        // `effects: None` rather than aborting the click.
         let sample_effects = !self.click_observe_window.is_zero();
         let baseline = if sample_effects {
-            wait::install_mutation_observer(&self.page).await?;
-            Some(
-                click_report::EffectsBaseline::capture(
+            let installed = wait::install_mutation_observer(&self.page).await;
+            match installed {
+                Ok(()) => click_report::EffectsBaseline::capture(
                     &self.page,
                     &self.network_tracker,
                     self.nav_generation_value(),
                 )
-                .await?,
-            )
+                .await
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "click effects baseline capture failed");
+                })
+                .ok(),
+                Err(e) => {
+                    tracing::debug!(error = %e, "mutation observer install failed");
+                    None
+                }
+            }
         } else {
             None
         };
