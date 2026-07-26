@@ -47,8 +47,10 @@ fn recv(reader: &mut impl BufRead, timeout: Duration) -> Option<Value> {
 async fn serve_rpc_observe_click_type() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["serve", "--no-sandbox"])
+        .args(["serve", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -113,9 +115,7 @@ async fn serve_rpc_observe_click_type() {
     send(&mut stdin, "browser.close", json!({}), 99);
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    std::thread::sleep(Duration::from_millis(300));
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 /// `page.evaluate` lets the agent run arbitrary JS to query element coordinates
@@ -125,8 +125,10 @@ async fn serve_rpc_observe_click_type() {
 async fn rpc_page_evaluate_returns_value() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["serve", "--no-sandbox"])
+        .args(["serve", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -164,8 +166,7 @@ async fn rpc_page_evaluate_returns_value() {
     send(&mut stdin, "browser.close", json!({}), 99);
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 /// observe must capture non-standard visual widgets (canvas, cursor:pointer
@@ -174,8 +175,10 @@ async fn rpc_page_evaluate_returns_value() {
 async fn rpc_observe_captures_visual_widgets() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["serve", "--no-sandbox"])
+        .args(["serve", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -228,8 +231,7 @@ async fn rpc_observe_captures_visual_widgets() {
     send(&mut stdin, "browser.close", json!({}), 99);
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 /// screenshot --annotate returns a PNG with boxes/labels drawn over it. We
@@ -239,8 +241,10 @@ async fn rpc_observe_captures_visual_widgets() {
 async fn rpc_screenshot_annotate_returns_png_with_boxes() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["serve", "--no-sandbox"])
+        .args(["serve", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -283,8 +287,7 @@ async fn rpc_screenshot_annotate_returns_png_with_boxes() {
     send(&mut stdin, "browser.close", json!({}), 99);
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 fn base64_decode(s: &str) -> Vec<u8> {
@@ -298,19 +301,22 @@ fn base64_decode(s: &str) -> Vec<u8> {
 /// PNG plus per-glyph crops. This exercises the full Session::dewiggle path
 /// over JSON-RPC against the local wiggle-text fixture.
 ///
-/// NOTE: ignored by default because it needs an animated canvas, and a
-/// perpetual animation loop freezes CDP in plain `serve` (headless=new) mode
-/// unless a screencast is already pumping the page. The dewiggle tool starts
-/// its own screencast internally, but the page wedges before it can begin.
-/// The tool is verified end-to-end via the live viewer (`view` mode) instead.
-/// Run manually with: cargo test --release --test it_rpc rpc_dewiggle -- --ignored --nocapture
-#[tokio::test]
-#[ignore = "needs a live viewer (screencast) to pump the animated page; run via `view` mode"]
+/// This was `#[ignore]`d for a year of commits on the theory that a perpetual
+/// rAF loop wedges CDP unless a screencast is pumping the page. That was not
+/// the cause. The test alone in this file used the default single-threaded
+/// runtime, while `recv` blocks the thread on the child's stdout — starving
+/// the fixture server task that shares that runtime, so the page never
+/// finished loading and the next CDP call timed out. The animation was a
+/// red herring; `flavor = "multi_thread"`, as every other test here already
+/// used, is the fix. It now runs in CI like everything else.
+#[tokio::test(flavor = "multi_thread")]
 async fn rpc_dewiggle_returns_realigned_png_and_char_crops() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["serve", "--no-sandbox"])
+        .args(["serve", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -344,7 +350,11 @@ async fn rpc_dewiggle_returns_realigned_png_and_char_crops() {
     // Dewiggle captures N screenshots sequentially, which can take a while
     // in a cold headless browser, so allow a generous timeout.
     let resp = recv(&mut stdout, Duration::from_secs(90)).expect("dewiggle response");
-    assert_eq!(resp["result"]["frameCount"], json!(8));
+    assert_eq!(
+        resp["result"]["frameCount"],
+        json!(8),
+        "dewiggle did not return 8 frames; full response: {resp}"
+    );
     // Region auto-detected from the canvas bounding box.
     assert!(
         resp["result"]["region"]["width"].as_f64().unwrap() > 100.0,
@@ -372,6 +382,5 @@ async fn rpc_dewiggle_returns_realigned_png_and_char_crops() {
     send(&mut stdin, "browser.close", json!({}), 99);
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }

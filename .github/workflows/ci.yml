@@ -21,14 +21,13 @@ jobs:
       - name: Install Chromium
         run: |
           sudo apt-get update
-          sudo apt-get install -y chromium-browser fonts-noto-cjk
-          echo "HEADLESS_USE_BROWSER_PATH=$(which chromium-browser)" >> $GITHUB_ENV
+          sudo apt-get install -y chromium fonts-noto-cjk
+          echo "HEADLESS_USE_BROWSER_PATH=$(which chromium)" >> $GITHUB_ENV
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo test
-        env:
-          # Run as root in CI; the runtime auto-enables --no-sandbox for tests.
-          HEADLESS_USE_TEST_NO_SANDBOX: "1"
+        # Sandboxless launch is not configured here: the browser-backed tests
+        # set `no_sandbox: true` themselves in tests/common/mod.rs.
         run: cargo test --workspace -- --test-threads=2

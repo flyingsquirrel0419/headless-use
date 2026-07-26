@@ -9,20 +9,28 @@ use headless_use::input::{Modifiers, Point};
 use headless_use::observe::parse_ref_with_generation;
 use headless_use::session::wait::WaitOptions;
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 /// Verify that wait detects a real in-flight HTTP request via CDP Network events
 /// and does NOT return stable while the request is genuinely in progress.
 #[tokio::test]
 async fn p0_wait_detects_real_cdp_network_activity() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("real-slow-fetch.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
 
@@ -97,7 +105,7 @@ async fn p0_wait_detects_real_cdp_network_activity() {
 /// Verify that mouseMoved uses button="none" and does not report left-held.
 #[tokio::test]
 async fn p0_mouse_move_does_not_report_button_held() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("mouse-buttons.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
 
@@ -139,7 +147,7 @@ async fn p0_generation_bound_reference_format() {
 /// Verify that a generation mismatch causes StaleReference.
 #[tokio::test]
 async fn p0_generation_mismatch_causes_stale_error() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -168,7 +176,7 @@ async fn p0_generation_mismatch_causes_stale_error() {
 /// Verify that navigation to an unreachable URL returns an error, not success.
 #[tokio::test]
 async fn p0_navigation_failure_detected() {
-    let (s, _srv) = session().await;
+    let (_profile, s, _srv) = session().await;
     // Navigate to a URL that will fail (unreachable port).
     let result = s.open("http://127.0.0.1:1/nope").await;
     assert!(

@@ -4,9 +4,12 @@
 //!   - the cursor overlay injects (idempotent guard set),
 //!   - screencast produces real JPEG frames,
 //!   - the localhost HTTP server serves index + stream with the right
-//!     content-type, and frames change after a mouse move.
+//!     content-type, and frames change after a mouse move,
+//!   - the access token is enforced exactly where it is supposed to be.
 
 #![cfg(test)]
+
+mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,27 +34,63 @@ fn launch_opts() -> LaunchOptions {
     opts
 }
 
-async fn start_session() -> (
-    Arc<Page>,
-    headless_use::browser::Browser,
-    std::path::PathBuf,
-) {
-    let mut opts = launch_opts();
-    let dir = std::env::temp_dir().join(format!("hu-viewer-{}", fastrand_u64()));
-    opts.user_data_dir = Some(dir.clone());
-    let browser = headless_use::browser::Browser::launch(opts).await.unwrap();
-    let page = Arc::new(browser.new_page().await.unwrap());
-    (page, browser, dir)
+/// A browser plus the profile directory this test owns.
+///
+/// These tests pin `user_data_dir`, which means the library will not clean it
+/// up (it only removes directories it created itself). Nothing did, so every
+/// run left a `/tmp/hu-viewer-*` behind. [`common::TempProfile`] owns the
+/// directory now; [`ViewerSession::close`] additionally shuts the browser down
+/// on the normal path, and [`Drop`] kills it if a test panicked first.
+struct ViewerSession {
+    page: Arc<Page>,
+    browser: Option<headless_use::browser::Browser>,
+    /// Held for its `Drop`, which is what removes the directory.
+    #[allow(dead_code)]
+    profile: common::TempProfile,
 }
 
-fn fastrand_u64() -> String {
-    let bytes: [u8; 8] = std::array::from_fn(|_| fastrand::u8(0..=255));
-    hex::encode(bytes)
+impl ViewerSession {
+    async fn start() -> Self {
+        let profile = common::TempProfile::new();
+        let mut opts = launch_opts();
+        opts.user_data_dir = Some(profile.path().to_path_buf());
+        let browser = headless_use::browser::Browser::launch(opts).await.unwrap();
+        let page = Arc::new(browser.new_page().await.unwrap());
+        Self {
+            page,
+            browser: Some(browser),
+            profile,
+        }
+    }
+
+    fn page(&self) -> Arc<Page> {
+        self.page.clone()
+    }
+
+    /// Shut the browser down and remove the profile directory.
+    ///
+    /// Explicit and `async` because `Browser::shutdown` is async and `Drop`
+    /// cannot await; `block_on` inside `Drop` would panic on a runtime thread.
+    async fn close(mut self) {
+        if let Some(b) = self.browser.take() {
+            b.shutdown().await;
+        }
+        // `self.profile` removes the directory as it drops out of this fn.
+    }
+}
+
+impl Drop for ViewerSession {
+    fn drop(&mut self) {
+        // Kill the browser first; `TempProfile`'s own `Drop` runs after this
+        // and waits for any surviving Chrome helper before deleting.
+        drop(self.browser.take());
+    }
 }
 
 #[tokio::test]
 async fn screencast_produces_jpeg_frames() {
-    let (page, _browser, _dir) = start_session().await;
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
     // Open a page with content so frames have something to capture.
     let fixture = std::env::current_dir()
         .unwrap()
@@ -60,7 +99,7 @@ async fn screencast_produces_jpeg_frames() {
     page.goto(&url).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let cast = Screencast::start(&page, 70, 800, 600).await.unwrap();
+    let cast = Screencast::start(&page, 70, 800, 600, 30).await.unwrap();
     // Wait for at least one frame within 6s.
     let mut rx = cast.subscribe();
     let got = tokio::time::timeout(Duration::from_secs(6), rx.changed()).await;
@@ -70,11 +109,13 @@ async fn screencast_produces_jpeg_frames() {
     // JPEG SOI marker.
     assert_eq!(&frame.data[0..2], &[0xff, 0xd8], "frame must be JPEG");
     let _ = cast.stop().await;
+    vs.close().await;
 }
 
 #[tokio::test]
 async fn viewer_http_serves_index_and_stream() {
-    let (page, _browser, _dir) = start_session().await;
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
     let fixture = std::env::current_dir()
         .unwrap()
         .join("tests/fixtures/basic-form.html");
@@ -83,7 +124,7 @@ async fn viewer_http_serves_index_and_stream() {
     page.inject_cursor_overlay().await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let cast = Arc::new(Screencast::start(&page, 70, 800, 600).await.unwrap());
+    let cast = Arc::new(Screencast::start(&page, 70, 800, 600, 30).await.unwrap());
     // Pick a free port.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -104,10 +145,11 @@ async fn viewer_http_serves_index_and_stream() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("live viewer"), "index should be titled");
-    // The stream element is the page; the header floats over it.
+    // The stream element is the page; the header floats over it. The server
+    // rewrites the source to carry the access token.
     assert!(
-        body.contains(r#"<img id="v" src="/stream""#),
-        "index must embed the stream"
+        body.contains(r#"<img id="v" src="/stream?token="#),
+        "index must embed the stream with its token"
     );
     assert!(
         body.contains("object-fit: contain"),
@@ -137,11 +179,13 @@ async fn viewer_http_serves_index_and_stream() {
         ct.contains("multipart/x-mixed-replace"),
         "stream content-type must be multipart/x-mixed-replace, got: {ct}"
     );
+    vs.close().await;
 }
 
 #[tokio::test]
 async fn cursor_overlay_injects_idempotently() {
-    let (page, _browser, _dir) = start_session().await;
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
     let fixture = std::env::current_dir()
         .unwrap()
         .join("tests/fixtures/basic-form.html");
@@ -158,11 +202,13 @@ async fn cursor_overlay_injects_idempotently() {
     assert_eq!(val, "true", "cursor overlay guard must be set");
     // Injecting again must be a no-op (no error).
     page.inject_cursor_overlay().await.unwrap();
+    vs.close().await;
 }
 
 #[tokio::test]
 async fn screencast_survives_navigation() {
-    let (page, _browser, _dir) = start_session().await;
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
     let form = std::env::current_dir()
         .unwrap()
         .join("tests/fixtures/basic-form.html");
@@ -174,7 +220,7 @@ async fn screencast_survives_navigation() {
 
     page.goto(&form_url).await.unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let cast = Screencast::start(&page, 70, 800, 600).await.unwrap();
+    let cast = Screencast::start(&page, 70, 800, 600, 30).await.unwrap();
     let mut rx = cast.subscribe();
     // First frame from initial page.
     let got = tokio::time::timeout(Duration::from_secs(6), rx.changed()).await;
@@ -197,4 +243,159 @@ async fn screencast_survives_navigation() {
     }
     assert!(got_after, "screencast produced no frame after navigation");
     let _ = cast.stop().await;
+    vs.close().await;
+}
+
+/// Grab a free port on `host` by binding and immediately releasing it.
+fn free_port(host: &str) -> u16 {
+    let l = std::net::TcpListener::bind(format!("{host}:0")).unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    port
+}
+
+/// The token gate: generated and accepted everywhere, enforced only where the
+/// bind is reachable from off-box.
+///
+/// Both servers share one screencast so this needs a single browser. The
+/// enforcing case pins `require_token` rather than binding a routable address:
+/// `127.0.0.2` is *also* loopback, so an address-based check would not flip on
+/// it, and binding a real interface in a test is not portable. Pinning the flag
+/// is what the CLI's non-loopback path resolves to anyway, so the rejection
+/// path under test is the same code.
+#[tokio::test]
+async fn viewer_token_is_required_off_loopback_and_optional_on_it() {
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
+    let fixture = std::env::current_dir()
+        .unwrap()
+        .join("tests/fixtures/basic-form.html");
+    page.goto(&format!("file://{}", fixture.display()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let cast = Arc::new(Screencast::start(&page, 70, 800, 600, 30).await.unwrap());
+    let client = reqwest::Client::new();
+
+    // --- Loopback: a token exists and works, but is not demanded. ---
+    let port = free_port("127.0.0.1");
+    let open = headless_use::viewer::http::serve(
+        cast.clone(),
+        ViewerOptions {
+            port,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !open.token_required,
+        "a loopback bind must not reject token-less requests"
+    );
+    assert!(
+        open.token.len() >= 32,
+        "a token must be generated even when it is not enforced, got {:?}",
+        open.token
+    );
+    assert!(
+        open.url().contains(&format!("?token={}", open.token)),
+        "the printed URL must carry the token: {}",
+        open.url()
+    );
+    let resp = client
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "loopback without a token must still work"
+    );
+    // The URL we print is the one an operator clicks, so exercise it verbatim.
+    let resp = client.get(open.url()).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "the printed index URL must load");
+    let resp = client
+        .get(open.stream_url())
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the printed stream URL must load");
+    drop(open);
+
+    // --- Enforcing: only the right token gets in. ---
+    let port = free_port("127.0.0.2");
+    let guarded = headless_use::viewer::http::serve(
+        cast.clone(),
+        ViewerOptions {
+            host: "127.0.0.2".to_string(),
+            port,
+            token: Some("pinned-viewer-token".to_string()),
+            require_token: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(guarded.token_required);
+    let base = format!("http://127.0.0.2:{port}");
+
+    for target in [
+        format!("{base}/"),
+        format!("{base}/?token="),
+        format!("{base}/?token=pinned-viewer-toke"),
+        format!("{base}/?token=pinned-viewer-tokem"),
+        format!("{base}/stream"),
+        format!("{base}/stream?token=nope"),
+    ] {
+        let resp = client
+            .get(&target)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "must be rejected: {target}");
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("token"),
+            "401 body should say what is missing, got {body:?}"
+        );
+    }
+
+    // The right token is accepted, and the page it returns points the stream
+    // at a URL that will also be accepted.
+    let resp = client.get(guarded.url()).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "the correct token must be accepted");
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(r#"src="/stream?token=pinned-viewer-token""#),
+        "the index must forward the token to the stream element"
+    );
+
+    let resp = client
+        .get(guarded.stream_url())
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    assert!(
+        ct.contains("multipart/x-mixed-replace"),
+        "an authorized stream request must get the MJPEG stream, got {ct}"
+    );
+
+    // /health stays open on purpose: it reveals nothing about the page and
+    // container probes should not need the secret.
+    let resp = client.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "/health must not need a token");
+
+    drop(guarded);
+    let _ = cast.stop().await;
+    vs.close().await;
 }

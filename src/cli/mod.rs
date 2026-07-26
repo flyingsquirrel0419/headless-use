@@ -229,10 +229,16 @@ pub struct ViewArgs {
     /// expose the viewer on all interfaces for remote viewing.
     #[arg(long, default_value = "127.0.0.1")]
     pub viewer_host: String,
+    /// Pin the viewer access token instead of generating a random one. Must be
+    /// URL-safe: it is passed as `?token=<TOKEN>`. Required on a non-loopback
+    /// `--viewer-host`; on loopback it is generated and accepted but requests
+    /// without it are still served.
+    #[arg(long, value_name = "TOKEN")]
+    pub viewer_token: Option<String>,
     /// JPEG quality (1..100) for the screencast stream.
     #[arg(long, default_value_t = 80)]
     pub quality: u32,
-    /// Target framerate cap (everyNthFrame is always 1; this scales max dims).
+    /// Maximum frames per second published to viewers. 0 disables the cap.
     #[arg(long, default_value_t = 30)]
     pub fps: u32,
     /// Restrict navigation to these hosts (repeatable). Others are blocked.

@@ -6,7 +6,7 @@ rust-version = "1.75"
 authors = ["headless-use contributors"]
 license = "Apache-2.0"
 description = "Computer use for web development agents, built for headless Linux and CI"
-repository = "https://github.com/headless-use/headless-use"
+repository = "https://github.com/flyingsquirrel0419/headless-use"
 keywords = ["browser-automation", "cdp", "computer-use", "headless", "mcp"]
 categories = ["command-line-utilities", "development-tools::testing"]
 build = "build.rs"
@@ -27,7 +27,7 @@ mcp = []
 clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -41,7 +41,6 @@ sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 fastrand = "2"
-flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]

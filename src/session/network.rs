@@ -27,7 +27,7 @@ pub type NetworkError = BrowserError;
 /// `wait`). Secrets in URLs are masked by the tracker at capture time.
 pub async fn collect(
     _page: &crate::browser::Page,
-    tracker: &std::sync::Arc<tokio::sync::Mutex<NetworkTracker>>,
+    tracker: &std::sync::Arc<NetworkTracker>,
 ) -> Result<Vec<NetworkEntry>, BrowserError> {
-    Ok(tracker.lock().await.history().await)
+    Ok(tracker.history().await)
 }

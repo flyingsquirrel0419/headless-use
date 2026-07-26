@@ -76,7 +76,7 @@ async fn install_mutation_observer(page: &Page) -> Result<(), BrowserError> {
   window.__hu_mut_observer__ = obs;
   return 'installed';
 })()"#;
-    page.evaluate(expr).await?;
+    page.evaluate_sync(expr).await?;
     Ok(())
 }
 
@@ -89,7 +89,7 @@ async fn install_mutation_observer(page: &Page) -> Result<(), BrowserError> {
 pub async fn wait_until_stable(
     page: &Page,
     opts: WaitOptions,
-    tracker: &std::sync::Arc<tokio::sync::Mutex<NetworkTracker>>,
+    tracker: &std::sync::Arc<NetworkTracker>,
 ) -> Result<WaitResult, BrowserError> {
     let start = Instant::now();
 
@@ -98,7 +98,7 @@ pub async fn wait_until_stable(
 
     // Record the initial mutation timestamp so we have a baseline.
     let baseline_mut: f64 = page
-        .evaluate("window.__hu_last_mut__ || 0")
+        .evaluate_sync("window.__hu_last_mut__ || 0")
         .await?
         .value()
         .and_then(|v| v.as_f64())
@@ -118,7 +118,7 @@ pub async fn wait_until_stable(
             now: Date.now(),
           });
         })()"#;
-        let v = page.evaluate(state_expr).await?;
+        let v = page.evaluate_sync(state_expr).await?;
         let s = v.value().and_then(|v| v.as_str()).unwrap_or("{}");
         let obj: Value = serde_json::from_str(s).unwrap_or(Value::Object(Default::default()));
         let ready = obj.get("ready").and_then(|r| r.as_str()).unwrap_or("");
@@ -132,10 +132,8 @@ pub async fn wait_until_stable(
         // Network idle: no in-flight requests AND no activity for network_idle.
         // idle_for() returns time since the last network *event* of any kind,
         // so even a sub-poll request resets the clock.
-        let t = tracker.lock().await;
-        let pending = t.pending().await;
-        let idle = t.idle_for().await;
-        drop(t);
+        let pending = tracker.pending().await;
+        let idle = tracker.idle_for().await;
         let net_idle = pending == 0 && idle >= opts.network_idle;
 
         // DOM idle: time since the last mutation.
@@ -158,10 +156,8 @@ pub async fn wait_until_stable(
     }
 
     // Timed out. Report why.
-    let t = tracker.lock().await;
-    let pending = t.pending().await;
-    let idle = t.idle_for().await;
-    drop(t);
+    let pending = tracker.pending().await;
+    let idle = tracker.idle_for().await;
     let reason = if pending > 0 {
         "continuous-network-activity".to_string()
     } else if idle < opts.network_idle {

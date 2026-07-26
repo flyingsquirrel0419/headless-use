@@ -15,10 +15,10 @@ use headless_use::session::Session;
 
 /// Launch options with stealth on, plus the root-safe sandbox setting the rest
 /// of the suite uses.
-fn stealth_launch() -> headless_use::LaunchOptions {
+fn stealth_launch(profile: &common::TempProfile) -> headless_use::LaunchOptions {
     headless_use::LaunchOptions {
         stealth: true,
-        ..common::test_launch()
+        ..profile.launch_opts()
     }
 }
 
@@ -55,7 +55,8 @@ fn stealth_preload_script_patches_a_headless_dom() {
 async fn stealth_hides_the_headless_signals_a_bot_check_reads() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = Session::start(stealth_launch())
+    let _profile = common::TempProfile::new();
+    let s = Session::start(stealth_launch(&_profile))
         .await
         .expect("session start");
     s.open(&srv.url("basic-form.html")).await.unwrap();
@@ -125,7 +126,8 @@ async fn stealth_hides_the_headless_signals_a_bot_check_reads() {
 async fn stealth_reaches_cross_origin_iframes() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = Session::start(stealth_launch())
+    let _profile = common::TempProfile::new();
+    let s = Session::start(stealth_launch(&_profile))
         .await
         .expect("session start");
     // 127.0.0.1 vs localhost is a different origin, so this frame is an OOPIF —

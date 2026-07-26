@@ -21,7 +21,8 @@ async fn type_into_password_field_redacted_without_sensitive_flag() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -78,7 +79,8 @@ async fn trace_masks_json_params_with_secret_keys() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);

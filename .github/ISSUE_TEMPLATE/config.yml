@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/headless-use/headless-use/security/policy
+    url: https://github.com/flyingsquirrel0419/headless-use/security/policy
     about: Report security vulnerabilities privately. Do not use public issues.
   - name: Questions & discussions
-    url: https://github.com/headless-use/headless-use/discussions
+    url: https://github.com/flyingsquirrel0419/headless-use/discussions
     about: Ask questions and discuss ideas in GitHub Discussions.

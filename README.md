@@ -104,7 +104,7 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -t headless-use .
+docker build -f docker/Dockerfile -t headless-use .
 # The image bundles Chromium. Run one-shot:
 docker run --rm --network host headless-use \
   run --url http://127.0.0.1:3000 --screenshot /output/page.png
@@ -138,7 +138,7 @@ over stdio. AI agents connect directly without wrapping JSON-RPC:
 headless-use mcp --no-sandbox
 ```
 
-The server advertises 18 `browser_*` tools with typed `inputSchema`. Screenshot
+The server advertises 19 `browser_*` tools with typed `inputSchema`. Screenshot
 results return as MCP image blocks; everything else returns compact JSON text
 blocks. Errors return `isError: true` with a recovery hint.
 
@@ -164,7 +164,7 @@ client → initialize {protocolVersion, capabilities}
 server ← {protocolVersion, capabilities, serverInfo}
 client → notifications/initialized
 client → tools/list
-server ← {tools: [...18 browser_* tools...]}
+server ← {tools: [...19 browser_* tools...]}
 client → tools/call {name: "browser_observe", arguments: {}}
 server ← {content: [{type:"text", text:"{...elements...}"}], isError: false}
 ```
@@ -232,11 +232,25 @@ Notes:
 ### Live viewer
 
 ```bash
-headless-use view --no-sandbox          # http://127.0.0.1:7780/
+headless-use view --no-sandbox          # prints http://127.0.0.1:7780/?token=…
 ```
 
 `view` behaves exactly like `serve` (JSON-RPC on stdio) and additionally serves
 an MJPEG stream of the page with the agent cursor overlay.
+
+**Access token.** Every run gets a token, printed as part of the URL on stderr
+(stdout is the JSON-RPC channel) — open that URL as printed. Pin it with
+`--viewer-token <TOKEN>` when the URL has to stay stable. Whether it is
+*enforced* depends on the bind address:
+
+| `--viewer-host` | Request without a valid `?token=` |
+| --- | --- |
+| loopback (`127.0.0.1`, the default) | served — the token is accepted but optional |
+| anything else (`0.0.0.0`, a LAN address) | `401 Unauthorized` |
+
+```bash
+headless-use view --viewer-host 0.0.0.0 --viewer-token "$(openssl rand -hex 16)"
+```
 
 **Cursor motion.** `view` defaults to `--cursor-motion smooth`: the cursor walks
 to a click/hover target, emitting real intermediate `mouseMoved` events. That is
@@ -250,9 +264,12 @@ headless-use serve --cursor-motion smooth    # slower, hover-menu friendly
 ```
 
 > **Exposure note:** the viewer binds to `127.0.0.1` by default.
-> `--viewer-host 0.0.0.0` opens it to the network, and the stream is
-> **unauthenticated** — anyone who can reach that address sees whatever the page
-> shows, including logged-in content. See [docs/security.md](docs/security.md).
+> `--viewer-host 0.0.0.0` opens it to the network, where the token is required.
+> The token is a bearer credential in a URL, so it lands in shell and browser
+> history and in `Referer` headers, and the stream itself is plain HTTP — anyone
+> who obtains that URL, or who can watch the traffic, sees whatever the page
+> shows, including logged-in content. Tunnel it or front it with TLS on an
+> untrusted network. See [docs/security.md](docs/security.md).
 
 `serve` accepts JSON-RPC methods including: `browser.open`, `observe`, `screenshot`,
 `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`, `scroll`, `mouse.drag`,
@@ -281,7 +298,7 @@ Error codes: `BROWSER_NOT_FOUND`, `LAUNCH_FAILED`, `CONNECTION_FAILED`,
 ## Docker example
 
 ```bash
-docker build -t headless-use .
+docker build -f docker/Dockerfile -t headless-use .
 docker run --rm --network host --shm-size=1g headless-use \
   serve --no-sandbox
 ```
@@ -317,7 +334,8 @@ directory, Chrome site isolation stays on, and a host allow/deny policy is
 enforced on navigation (`--allow-host`/`--deny-host`) — which also restricts
 navigation to `http`/`https`, so `file:`/`data:`/`javascript:` URLs cannot slip
 past a host rule. The live viewer is loopback-only unless you widen it with
-`--viewer-host`, which is unauthenticated by design.
+`--viewer-host`, and a non-loopback bind requires the `?token=` access token
+(`--viewer-token`); on loopback the token is accepted but not demanded.
 
 ## Community
 
@@ -325,7 +343,7 @@ past a host rule. The live viewer is loopback-only unless you widen it with
 - [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
 - [Security Policy](SECURITY.md) — vulnerability reporting
 - [Changelog](CHANGELOG.md) — release history
-- [Discussions](https://github.com/headless-use/headless-use/discussions) — questions & ideas
+- [Discussions](https://github.com/flyingsquirrel0419/headless-use/discussions) — questions & ideas
 
 ## License
 

@@ -25,6 +25,9 @@ pub struct Trace {
     actions_file: Option<tokio::fs::File>,
     seq: AtomicU64,
     start: Instant,
+    /// Latched on the first failed append to `actions.jsonl`. See
+    /// [`Trace::write_failed`].
+    write_failed: Option<String>,
 }
 
 impl Trace {
@@ -43,6 +46,7 @@ impl Trace {
             actions_file,
             seq: AtomicU64::new(0),
             start: Instant::now(),
+            write_failed: None,
         })
     }
 
@@ -51,12 +55,30 @@ impl Trace {
         &self.dir
     }
 
+    /// The first append error, if any entry failed to reach `actions.jsonl`.
+    ///
+    /// `Some(_)` means the trace on disk is *incomplete*: at least one recorded
+    /// action was not persisted even though [`Trace::record`] handed back a
+    /// sequence number. [`Trace::flush`] turns this into an error so a caller
+    /// (`trace.stop`) cannot mistake a truncated trace for an audit log.
+    pub fn write_failed(&self) -> Option<&str> {
+        self.write_failed.as_deref()
+    }
+
     /// Record an action.
     ///
     /// Secrets are masked at this boundary as a final defense layer: even if a
     /// caller forgets to set `sensitive=true`, or a new action type is added
     /// that carries credentials, the trace never persists raw secrets. The
     /// masking is conservative (it may redact non-secrets) but never leaks.
+    ///
+    /// ## Write failures
+    /// The returned sequence number is *not* a promise that the entry reached
+    /// disk: `record` is called from dozens of action paths that have no
+    /// meaningful recovery for a full disk, so it does not return a `Result`.
+    /// Instead a failed append is logged at `error!` and latched in
+    /// [`Trace::write_failed`], which [`Trace::flush`] reports as an error —
+    /// so an incomplete trace can never pass for a complete one.
     pub async fn record(&mut self, kind: &str, params: Value) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         // Final defense: mask secrets in every action's params before writing.
@@ -70,8 +92,23 @@ impl Trace {
         });
         if let Some(f) = self.actions_file.as_mut() {
             let line = format!("{}\n", entry);
-            let _ = f.write_all(line.as_bytes()).await;
-            let _ = f.flush().await;
+            let written = match f.write_all(line.as_bytes()).await {
+                Ok(()) => f.flush().await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = written {
+                tracing::error!(
+                    sequence = seq,
+                    action = kind,
+                    error = %e,
+                    "failed to append action to trace; the trace on disk is incomplete"
+                );
+                // Latch the first failure only: a broken file usually fails on
+                // every subsequent write, and the first error is the useful one.
+                if self.write_failed.is_none() {
+                    self.write_failed = Some(format!("action {seq} ({kind}): {e}"));
+                }
+            }
         }
         seq
     }
@@ -84,18 +121,34 @@ impl Trace {
     }
 
     /// Flush and write metadata + report.
+    ///
+    /// Returns an error if any [`Trace::record`] append failed earlier. The
+    /// metadata and report are still written first — a partial trace is worth
+    /// keeping — but the caller (`trace.stop`) is told the record is
+    /// incomplete rather than being handed a run directory that looks whole.
     pub async fn flush(&mut self) -> Result<(), std::io::Error> {
         if let Some(mut f) = self.actions_file.take() {
-            f.flush().await?;
+            if let Err(e) = f.flush().await {
+                if self.write_failed.is_none() {
+                    self.write_failed = Some(format!("final flush: {e}"));
+                }
+            }
         }
         let meta = json!({
             "version": crate::VERSION,
             "startedAt": util::timestamp_utc(),
             "durationMs": self.start.elapsed().as_millis(),
+            "incomplete": self.write_failed.is_some(),
         });
         let meta_path = self.dir.join("metadata.json");
         tokio::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?).await?;
         self.write_report().await?;
+        if let Some(err) = &self.write_failed {
+            return Err(std::io::Error::other(format!(
+                "trace is incomplete: at least one action was not written to {}: {err}",
+                self.dir.join("actions.jsonl").display()
+            )));
+        }
         Ok(())
     }
 

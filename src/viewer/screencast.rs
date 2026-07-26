@@ -82,11 +82,21 @@ impl Screencast {
     /// background task acks every frame, updates the latest-frame channel,
     /// restarts the cast on main-frame navigation, and re-arms the cast when
     /// idle so the stream never freezes.
+    ///
+    /// `max_fps` caps how often a decoded frame is published to viewers. Chrome
+    /// has no frame-rate control (`everyNthFrame` throttles by repaint count,
+    /// not by time), so the cap is applied here: every frame is still acked —
+    /// skipping an ack stalls the whole cast — but frames arriving inside the
+    /// interval are dropped instead of forwarded. `0` means no cap.
+    ///
+    /// The `--fps` CLI flag used to be parsed and then never read by anything;
+    /// this is the behavior its help text always claimed.
     pub async fn start(
         page: &Page,
         quality: u32,
         max_width: u32,
         max_height: u32,
+        max_fps: u32,
     ) -> Result<Self, BrowserError> {
         // Subscribe to events BEFORE starting the cast so we never miss the
         // first frame. The CDP client fans events out to every subscriber.
@@ -111,6 +121,12 @@ impl Screencast {
             // resets whenever frames are actively flowing.
             let mut last_frame = tokio::time::Instant::now();
             let idle = Duration::from_millis(IDLE_REARM_MS);
+            let min_interval = if max_fps == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_micros(1_000_000 / max_fps as u64)
+            };
+            let mut last_published: Option<tokio::time::Instant> = None;
             loop {
                 let idle_timer = tokio::time::sleep_until(last_frame + idle);
                 tokio::pin!(idle_timer);
@@ -158,17 +174,26 @@ impl Screencast {
                                         Duration::from_secs(5),
                                     )
                                     .await;
-                                if let Some(data_b64) =
-                                    params.get("data").and_then(|v| v.as_str())
-                                {
-                                    let data = base64::engine::general_purpose::STANDARD
-                                        .decode(data_b64)
-                                        .unwrap_or_default();
-                                    let frame = Frame {
-                                        data,
-                                        metadata: params.clone(),
-                                    };
-                                    let _ = latest_tx_task.send(Some(frame));
+                                let now = tokio::time::Instant::now();
+                                // `map_or`, not `is_none_or`: the latter is
+                                // stable only since 1.82 and this crate's MSRV
+                                // is 1.75.
+                                let due = last_published
+                                    .map_or(true, |t| now.duration_since(t) >= min_interval);
+                                if due {
+                                    if let Some(data_b64) =
+                                        params.get("data").and_then(|v| v.as_str())
+                                    {
+                                        let data = base64::engine::general_purpose::STANDARD
+                                            .decode(data_b64)
+                                            .unwrap_or_default();
+                                        let frame = Frame {
+                                            data,
+                                            metadata: params.clone(),
+                                        };
+                                        let _ = latest_tx_task.send(Some(frame));
+                                        last_published = Some(now);
+                                    }
                                 }
                                 // Reset the idle timer: we just got a frame.
                                 last_frame = tokio::time::Instant::now();

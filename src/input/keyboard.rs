@@ -33,28 +33,30 @@ pub struct Key {
     pub text: Option<String>,
     /// Location: 0=standard, 1=left, 2=right, 3=numpad.
     pub location: u32,
+    /// Modifiers the physical keyboard must hold to produce this key, e.g.
+    /// [`Modifiers::SHIFT`] for `A` or `?`. These are OR-ed into whatever the
+    /// caller passes to [`Keyboard::down`] / [`Keyboard::up`], so a page that
+    /// reads `event.shiftKey` sees the truth without the caller spelling it out.
+    pub modifiers: Modifiers,
 }
 
 impl Key {
     /// A simple printable key from a single char.
+    ///
+    /// The physical identity (`code`, `windowsVirtualKeyCode`) and the implied
+    /// [`Key::modifiers`] come from [`char_to_key`], which models a **US
+    /// QWERTY** layout — see that function for why that matters.
     pub fn printable(c: char) -> Self {
-        let code = if c.is_ascii_alphabetic() {
-            format!("Key{}", c.to_ascii_uppercase())
-        } else {
-            char_to_code(c).to_string()
-        };
-        let key_code = if c.is_ascii_alphabetic() {
-            // 'A'..'Z' virtual key codes 65..90
-            c.to_ascii_uppercase() as u32
-        } else {
-            char_to_vk(c)
-        };
+        let (code, key_code, modifiers) = char_to_key(c);
         Key {
             key: c.to_string(),
             code,
             key_code,
+            // The literal character, always: CDP turns `text` into the char
+            // event that actually inserts it. Shift never rewrites this.
             text: Some(c.to_string()),
             location: 0,
+            modifiers,
         }
     }
 }
@@ -116,7 +118,11 @@ impl<'a> Keyboard<'a> {
     }
 
     /// Press `key` down with modifiers.
+    ///
+    /// `mods` is OR-ed with [`Key::modifiers`], so typing `A` or `?` reports
+    /// `shiftKey === true` even when the caller passed [`Modifiers::NONE`].
     pub async fn down(&self, key: &Key, mods: Modifiers) -> Result<(), BrowserError> {
+        let mods = mods.union(key.modifiers);
         let mut params = json!({
             "type": "keyDown",
             "key": key.key,
@@ -140,8 +146,10 @@ impl<'a> Keyboard<'a> {
         Ok(())
     }
 
-    /// Release `key` with modifiers.
+    /// Release `key` with modifiers. Like [`Self::down`], `mods` is OR-ed with
+    /// [`Key::modifiers`] so the keyup carries the same modifier state.
     pub async fn up(&self, key: &Key, mods: Modifiers) -> Result<(), BrowserError> {
+        let mods = mods.union(key.modifiers);
         let params = json!({
             "type": "keyUp",
             "key": key.key,
@@ -224,7 +232,75 @@ impl<'a> Keyboard<'a> {
     }
 }
 
-/// Map a non-alphabetic ASCII char to its DOM `code`.
+/// Resolve a printable char to its physical key identity: DOM `code`, Windows
+/// virtual-key code, and the modifiers needed to produce it.
+///
+/// ## This is a US QWERTY mapping, deliberately
+/// `code` names a *physical key position*, not a glyph, so it is only definable
+/// relative to a layout. `!` reports `Digit1` because that is the key that
+/// produces `!` on US QWERTY (with Shift); on AZERTY the same glyph sits
+/// elsewhere entirely. Chrome's own `Input.dispatchKeyEvent` has no layout
+/// concept — it forwards whatever `code` we send — and every headless driver
+/// (Puppeteer, Playwright) makes the same US QWERTY assumption. Modelling other
+/// layouts would require knowing the OS layout of a browser we launched
+/// ourselves, which we do not, and would break every US-layout expectation in
+/// existing page code. So: US QWERTY, everywhere, on purpose.
+fn char_to_key(c: char) -> (String, u32, Modifiers) {
+    if c.is_ascii_alphabetic() {
+        // 'A'..'Z' virtual key codes 65..90 for both cases; uppercase is the
+        // same physical key held with Shift.
+        let upper = c.to_ascii_uppercase();
+        let mods = if c.is_ascii_uppercase() {
+            Modifiers::SHIFT
+        } else {
+            Modifiers::NONE
+        };
+        return (format!("Key{upper}"), upper as u32, mods);
+    }
+    match shift_base(c) {
+        // A shifted symbol borrows the physical key of its unshifted twin.
+        Some(base) => (
+            char_to_code(base).to_string(),
+            char_to_vk(base),
+            Modifiers::SHIFT,
+        ),
+        None => (char_to_code(c).to_string(), char_to_vk(c), Modifiers::NONE),
+    }
+}
+
+/// The unshifted char sharing a physical key with shifted `c`, on US QWERTY.
+///
+/// Returns `None` for chars that need no Shift (or that we cannot place). Kept
+/// as a plain char->char table so the `code`/vk tables below stay the single
+/// source of truth for physical key identity.
+fn shift_base(c: char) -> Option<char> {
+    Some(match c {
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+        '_' => '-',
+        '+' => '=',
+        '{' => '[',
+        '}' => ']',
+        '|' => '\\',
+        ':' => ';',
+        '"' => '\'',
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+        '~' => '`',
+        _ => return None,
+    })
+}
+
+/// Map a non-alphabetic *unshifted* ASCII char to its DOM `code` (US QWERTY).
 fn char_to_code(c: char) -> &'static str {
     match c {
         '0' => "Digit0",
@@ -253,7 +329,8 @@ fn char_to_code(c: char) -> &'static str {
     }
 }
 
-/// Map a non-alphabetic ASCII char to its Windows virtual key code.
+/// Map a non-alphabetic *unshifted* ASCII char to its Windows virtual key code
+/// (US QWERTY; shifted symbols reuse their base key's code via [`shift_base`]).
 fn char_to_vk(c: char) -> u32 {
     match c {
         '0' => 0x30,
@@ -300,6 +377,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x0D,
                 text: Some("\r".into()),
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -310,6 +388,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x09,
                 text: Some("\t".into()),
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -320,6 +399,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x08,
                 text: Some("\u{0008}".into()),
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -330,6 +410,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x2E,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -340,6 +421,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x1B,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -350,6 +432,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x24,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -360,6 +443,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x23,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -370,6 +454,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x21,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -380,6 +465,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x22,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -390,6 +476,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x26,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -400,6 +487,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x28,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -410,6 +498,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x25,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -420,6 +509,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x27,
                 text: None,
                 location: 0,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -430,6 +520,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x11,
                 text: None,
                 location: 1,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -440,6 +531,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x10,
                 text: None,
                 location: 1,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -450,6 +542,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x12,
                 text: None,
                 location: 1,
+                modifiers: Modifiers::NONE,
             },
         );
         add(
@@ -460,6 +553,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                 key_code: 0x5B,
                 text: None,
                 location: 1,
+                modifiers: Modifiers::NONE,
             },
         );
         // F1-F12
@@ -474,6 +568,7 @@ fn key_table() -> &'static HashMap<&'static str, Key> {
                     key_code: 0x70 + (i - 1) as u32,
                     text: None,
                     location: 0,
+                    modifiers: Modifiers::NONE,
                 },
             );
         }
@@ -525,8 +620,69 @@ mod tests {
         let k = Key::printable('5');
         assert_eq!(k.code, "Digit5");
         assert_eq!(k.key_code, 0x35);
+        assert_eq!(k.modifiers, Modifiers::NONE);
         let k = Key::printable('-');
         assert_eq!(k.code, "Minus");
         assert_eq!(k.key_code, 0xBD);
+        assert_eq!(k.modifiers, Modifiers::NONE);
+    }
+
+    /// Uppercase is the lowercase key held with Shift: same code, same vk.
+    #[test]
+    fn printable_uppercase_implies_shift() {
+        for (c, code, vk) in [('A', "KeyA", 0x41u32), ('Z', "KeyZ", 0x5A)] {
+            let k = Key::printable(c);
+            assert_eq!(k.code, code);
+            assert_eq!(k.key_code, vk);
+            assert_eq!(k.modifiers, Modifiers::SHIFT, "{c} should imply Shift");
+            // The literal char still rides in `text` — CDP needs it verbatim.
+            assert_eq!(k.text.as_deref(), Some(c.to_string().as_str()));
+        }
+        assert_eq!(Key::printable('a').modifiers, Modifiers::NONE);
+    }
+
+    /// Every shifted symbol keeps the physical key of its unshifted twin
+    /// instead of degrading to `Unidentified`/vk 0.
+    #[test]
+    fn printable_shifted_symbols_keep_physical_key() {
+        let cases: &[(char, &str, u32)] = &[
+            ('!', "Digit1", 0x31),
+            ('@', "Digit2", 0x32),
+            ('#', "Digit3", 0x33),
+            ('$', "Digit4", 0x34),
+            ('%', "Digit5", 0x35),
+            ('^', "Digit6", 0x36),
+            ('&', "Digit7", 0x37),
+            ('*', "Digit8", 0x38),
+            ('(', "Digit9", 0x39),
+            (')', "Digit0", 0x30),
+            ('_', "Minus", 0xBD),
+            ('+', "Equal", 0xBB),
+            ('{', "BracketLeft", 0xDB),
+            ('}', "BracketRight", 0xDD),
+            ('|', "Backslash", 0xDC),
+            (':', "Semicolon", 0xBA),
+            ('"', "Quote", 0xDE),
+            ('<', "Comma", 0xBC),
+            ('>', "Period", 0xBE),
+            ('?', "Slash", 0xBF),
+            ('~', "Backquote", 0xC0),
+        ];
+        for &(c, code, vk) in cases {
+            let k = Key::printable(c);
+            assert_eq!(k.code, code, "code for {c}");
+            assert_eq!(k.key_code, vk, "vk for {c}");
+            assert_eq!(k.modifiers, Modifiers::SHIFT, "shift for {c}");
+            assert_eq!(k.text.as_deref(), Some(c.to_string().as_str()));
+            assert_eq!(k.key, c.to_string());
+        }
+    }
+
+    /// Named keys carry no implied modifiers.
+    #[test]
+    fn named_keys_have_no_implied_modifiers() {
+        assert_eq!(named("Enter").unwrap().modifiers, Modifiers::NONE);
+        assert_eq!(named("F5").unwrap().modifiers, Modifiers::NONE);
+        assert_eq!(named("Shift").unwrap().modifiers, Modifiers::NONE);
     }
 }

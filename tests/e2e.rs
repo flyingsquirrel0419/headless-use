@@ -21,7 +21,8 @@ async fn full_e2e_login_drag_trace_screenshot() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);

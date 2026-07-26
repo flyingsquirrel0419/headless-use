@@ -63,6 +63,11 @@ pub struct TrackedRequest {
     /// meaningless number. We measure locally instead.
     #[serde(skip)]
     started_at: Option<Instant>,
+    /// When response headers arrived. A request that has had headers for a
+    /// while but has not finished is a *streaming* body (Server-Sent Events, a
+    /// long-poll, a chunked feed), not work the page is still waiting on.
+    #[serde(skip)]
+    responded_at: Option<Instant>,
 }
 
 impl TrackedRequest {
@@ -95,13 +100,37 @@ impl TrackedRequest {
             failed: None,
             finished: false,
             started_at: Some(Instant::now()),
+            responded_at: None,
         }
+    }
+
+    /// True if this request is an open stream rather than pending work.
+    ///
+    /// Response headers have arrived and the body has been streaming for longer
+    /// than [`STREAMING_GRACE`]. An EventSource or long-poll never emits
+    /// `loadingFinished`, so counting it as pending makes `wait` unable to ever
+    /// report a stable page on any app holding a live connection.
+    fn is_streaming(&self) -> bool {
+        !self.finished
+            && self
+                .responded_at
+                .is_some_and(|t| t.elapsed() >= STREAMING_GRACE)
     }
 }
 
 /// Inner mutable state guarded by the mutex.
 /// Maximum number of completed requests kept for diagnostics.
 const HISTORY_LIMIT: usize = 1000;
+
+/// How long a response body may stream before the request stops counting as
+/// pending work. Short enough that `wait` is not held hostage by an EventSource,
+/// long enough that an ordinary multi-hundred-millisecond response still counts.
+const STREAMING_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Hard cap on the in-flight set. `loadingFinished` is not guaranteed for every
+/// request (aborted fetches, closed streams, targets that detach), so without a
+/// cap the map is an unbounded leak on a long-lived session.
+const IN_FLIGHT_LIMIT: usize = 1000;
 
 struct Inner {
     /// In-flight request ids (started, not yet finished).
@@ -119,6 +148,30 @@ impl Inner {
     fn record_started(&mut self, req: TrackedRequest) {
         self.last_activity = Instant::now();
         self.in_flight.insert(req.request_id.clone(), req);
+        self.evict_overflow();
+    }
+
+    /// Drop the oldest in-flight entries once the set exceeds its cap, moving
+    /// them to history so they stay visible in diagnostics.
+    fn evict_overflow(&mut self) {
+        while self.in_flight.len() > IN_FLIGHT_LIMIT {
+            let Some(oldest) = self
+                .in_flight
+                .iter()
+                .min_by_key(|(_, r)| r.started_at)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            if let Some(mut req) = self.in_flight.remove(&oldest) {
+                req.failed = Some("abandoned: in-flight limit exceeded".into());
+                req.finished = true;
+                self.history.push_back(req);
+                if self.history.len() > HISTORY_LIMIT {
+                    self.history.pop_front();
+                }
+            }
+        }
     }
 
     /// Record a response header arrival. The body may still be streaming, so
@@ -133,6 +186,7 @@ impl Inner {
         self.last_activity = Instant::now();
         if let Some(req) = self.in_flight.get_mut(request_id) {
             req.status = Some(status);
+            req.responded_at = Some(Instant::now());
         }
     }
 
@@ -202,6 +256,7 @@ impl NetworkTracker {
 
         let inner = self.inner.clone();
         let mut events = page.cdp().subscribe_events_async().await;
+        let own_session = page.session_id().to_string();
 
         {
             let mut g = inner.lock().await;
@@ -210,6 +265,12 @@ impl NetworkTracker {
 
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
+                // Scope to this page's target. The bus is shared, so without
+                // this filter a popup's traffic would inflate this page's
+                // in-flight count and keep `wait` from ever settling.
+                if event.session_id.as_deref() != Some(own_session.as_str()) {
+                    continue;
+                }
                 let method = event.method.as_str();
                 match method {
                     "Network.requestWillBeSent" => {
@@ -255,8 +316,24 @@ impl NetworkTracker {
         Ok(())
     }
 
-    /// Current count of in-flight requests.
+    /// Count of in-flight requests the page is still *waiting on*.
+    ///
+    /// Open streams (see [`TrackedRequest::is_streaming`]) are excluded. They
+    /// remain in the in-flight set and in [`Self::history`], so diagnostics
+    /// still show them; they simply do not block `wait` from reporting a stable
+    /// page, because they never end on their own.
     pub async fn pending(&self) -> u64 {
+        self.inner
+            .lock()
+            .await
+            .in_flight
+            .values()
+            .filter(|r| !r.is_streaming())
+            .count() as u64
+    }
+
+    /// Count of in-flight requests including open streams. Diagnostics only.
+    pub async fn pending_including_streams(&self) -> u64 {
         self.inner.lock().await.in_flight.len() as u64
     }
 

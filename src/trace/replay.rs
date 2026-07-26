@@ -79,10 +79,18 @@ struct TraceEntry {
 }
 
 /// Read and parse `actions.jsonl` from a run directory.
+///
+/// A missing or unreadable `actions.jsonl` is an error, not an empty replay.
+/// It used to be `unwrap_or_default()`, which turned "there is no trace here"
+/// into zero entries — and zero entries replay perfectly, so the caller got
+/// `all_succeeded: true` for having replayed nothing. The CLI happened to
+/// pre-check the path, but the JSON-RPC and MCP `replay` methods did not, so an
+/// agent handed a wrong `runDir` was told its replay passed.
 async fn read_actions(run_dir: &Path) -> Result<Vec<TraceEntry>, std::io::Error> {
-    let content = tokio::fs::read_to_string(run_dir.join("actions.jsonl"))
+    let path = run_dir.join("actions.jsonl");
+    let content = tokio::fs::read_to_string(&path)
         .await
-        .unwrap_or_default();
+        .map_err(|e| std::io::Error::new(e.kind(), format!("read {}: {e}", path.display())))?;
     let mut entries = Vec::new();
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -160,7 +168,7 @@ fn is_replayable(action_type: &str) -> bool {
 pub async fn replay(session: &Session, run_dir: &Path) -> Result<ReplayResult, BrowserError> {
     let entries = read_actions(run_dir)
         .await
-        .map_err(|e| BrowserError::Other(format!("read actions.jsonl: {e}")))?;
+        .map_err(|e| BrowserError::Trace(format!("read actions.jsonl: {e}")))?;
 
     let total_steps = entries.len() as u64;
     let mut steps = Vec::new();

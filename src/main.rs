@@ -7,6 +7,9 @@ use headless_use::cli::{Cli, Command};
 #[tokio::main]
 async fn main() {
     init_tracing();
+    // Before any browser is spawned: SIGTERM/SIGINT and panics must not leave a
+    // Chrome process and a temp profile dir behind.
+    headless_use::browser::launch::install_process_guards();
     let cli = Cli::parse();
     let code = match cli.command {
         Command::Doctor => headless_use::cli::commands::doctor().await,

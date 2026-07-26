@@ -1,10 +1,18 @@
 // Pre-load collector script injected via Page.addScriptToEvaluateOnNewDocument.
-// Runs before any page JS, so it captures all console + network activity.
+// Runs before any page JS, so it captures console output from the first line on.
+//
+// Console only. Network used to be collected here too, by wrapping fetch and
+// XMLHttpRequest — that code was replaced by the CDP Network.* tracker (see
+// src/session/network_tracker.rs) and then left behind, injected into every
+// page, feeding a buffer nothing read. It was not harmless: the array had no
+// length cap, so a chatty single-page app grew page memory without limit, and a
+// wrapped `fetch.toString()` is not native source, which is exactly the signal
+// stealth mode then had to paper over. Do not reintroduce it: CDP sees every
+// request, including ones JS never touches.
 (function () {
   if (window.__hu_installed__) return;
   window.__hu_installed__ = true;
   window.__hu_console__ = [];
-  window.__hu_network__ = [];
 
   var pushConsole = function (level, args, meta) {
     try {
@@ -33,48 +41,4 @@
     pushConsole('error', ['Unhandled promise rejection: ' + (r && r.stack ? r.stack : String(r))]);
   });
 
-  // Network: wrap fetch + XHR with in-flight tracking.
-  // __hu_net_inflight__ counts requests that started but haven't finished.
-  // wait-until-stable reads this to detect ongoing network activity.
-  window.__hu_net_inflight__ = 0;
-  var origFetch = window.fetch;
-  if (origFetch) {
-    window.fetch = function () {
-      var args = arguments;
-      var url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url) || '';
-      var method = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET';
-      var start = performance.now();
-      window.__hu_net_inflight__++;
-      return origFetch.apply(this, args).then(function (resp) {
-        window.__hu_net_inflight__--;
-        window.__hu_network__.push({ method: method, url: url, status: resp.status, durationMs: Math.round(performance.now() - start) });
-        return resp;
-      }, function (err) {
-        window.__hu_net_inflight__--;
-        window.__hu_network__.push({ method: method, url: url, failed: String(err) });
-        throw err;
-      });
-    };
-  }
-  var origXhrOpen = XMLHttpRequest.prototype.open;
-  var origXhrSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    this.__hu_method = method || 'GET';
-    this.__hu_url = url || '';
-    return origXhrOpen.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function () {
-    var self = this;
-    var start = performance.now();
-    window.__hu_net_inflight__++;
-    this.addEventListener('loadend', function () {
-      window.__hu_net_inflight__--;
-      window.__hu_network__.push({ method: self.__hu_method, url: self.__hu_url, status: self.status, durationMs: Math.round(performance.now() - start) });
-    });
-    this.addEventListener('error', function () {
-      window.__hu_net_inflight__--;
-      window.__hu_network__.push({ method: self.__hu_method, url: self.__hu_url, failed: 'network error' });
-    });
-    return origXhrSend.apply(this, arguments);
-  };
 })();

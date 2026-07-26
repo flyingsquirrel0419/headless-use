@@ -50,7 +50,7 @@ impl<'a> ObserveBuilder<'a> {
         // This is more reliable than stitching AX tree + DOM separately for the
         // common interactive set, and keeps it token-light.
         let script = include_str!("extract_elements.js");
-        let result = self.page.evaluate(script).await?;
+        let result = self.page.evaluate_sync(script).await?;
 
         let raw_elements = result
             .value()
@@ -91,14 +91,14 @@ impl<'a> ObserveBuilder<'a> {
     async fn current_viewport(&self) -> Result<crate::cdp::Viewport, BrowserError> {
         let v = self
             .page
-            .evaluate("JSON.stringify({w: window.innerWidth, h: window.innerHeight, d: window.devicePixelRatio})")
+            .evaluate_sync("JSON.stringify({w: window.innerWidth, h: window.innerHeight, d: window.devicePixelRatio})")
             .await?
             .value()
             .and_then(|v| v.as_str())
             .map(String::from)
             .unwrap_or_else(|| "{\"w\":1280,\"h\":720,\"d\":1}".into());
-        let obj: Value = serde_json::from_str(&v)
-            .map_err(|e| BrowserError::Other(format!("viewport parse: {e}")))?;
+        let obj: Value =
+            serde_json::from_str(&v).map_err(|e| BrowserError::Decode(format!("viewport: {e}")))?;
         Ok(crate::cdp::Viewport {
             width: obj.get("w").and_then(|w| w.as_u64()).unwrap_or(1280) as u32,
             height: obj.get("h").and_then(|h| h.as_u64()).unwrap_or(720) as u32,

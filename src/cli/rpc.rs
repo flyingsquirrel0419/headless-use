@@ -11,12 +11,14 @@ use crate::session::Session;
 
 /// Run the JSON-RPC loop over stdin/stdout.
 pub async fn run_stdio(session: Session) -> i32 {
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
+    let mut lines = protocol::stdin_lines();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
 
-    while let Some(req) = protocol::read_request(&mut reader) {
+    while let Some(line) = lines.recv().await {
+        let Some(req) = protocol::parse_request(&line) else {
+            continue;
+        };
         let req = match req {
             Ok(r) => r,
             Err(e) => {
@@ -399,8 +401,7 @@ pub async fn dispatch(
 
 /// The process working directory, which bounds every agent-supplied path.
 fn working_dir() -> Result<std::path::PathBuf, crate::browser::BrowserError> {
-    std::env::current_dir()
-        .map_err(|e| crate::browser::BrowserError::Other(format!("cannot read working dir: {e}")))
+    std::env::current_dir().map_err(crate::browser::BrowserError::Io)
 }
 
 /// Resolve a path supplied by the *agent* (over JSON-RPC/MCP), rejecting `..`

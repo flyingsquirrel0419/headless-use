@@ -16,7 +16,8 @@ async fn trace_records_actions_and_writes_report() {
         .await
         .expect("trace new");
     let dir = trace.dir().to_path_buf();
-    let session = headless_use::session::Session::start(common::test_launch())
+    let _session_profile = common::TempProfile::new();
+    let session = headless_use::session::Session::start(_session_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -75,7 +76,8 @@ async fn trace_redacts_sensitive_type() {
         .await
         .unwrap();
     let dir = trace.dir().to_path_buf();
-    let session = headless_use::session::Session::start(common::test_launch())
+    let _session_profile = common::TempProfile::new();
+    let session = headless_use::session::Session::start(_session_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);

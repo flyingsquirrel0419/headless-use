@@ -8,18 +8,26 @@ use headless_use::input::{Modifiers, MouseButton};
 use headless_use::observe::parse_ref;
 use headless_use::session::ClickTarget;
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 #[tokio::test]
 async fn launch_navigate_screenshot() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     let url = s.page().url().await.unwrap();
     assert!(url.contains("basic-form.html"));
@@ -30,7 +38,7 @@ async fn launch_navigate_screenshot() {
 
 #[tokio::test]
 async fn observe_finds_interactive_elements() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -57,7 +65,7 @@ async fn observe_finds_interactive_elements() {
 
 #[tokio::test]
 async fn click_and_type_login_flow() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -131,7 +139,7 @@ async fn click_and_type_login_flow() {
 
 #[tokio::test]
 async fn coordinate_click_records_event() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("mouse-buttons.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Click center of the target div.
@@ -159,7 +167,7 @@ async fn coordinate_click_records_event() {
 
 #[tokio::test]
 async fn right_click_and_double_click() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("mouse-buttons.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Right click -> contextmenu event
@@ -226,7 +234,7 @@ async fn parse_ref_helper() {
 /// path rather than the `#id` shortcut.
 #[tokio::test]
 async fn click_link_with_quoted_role_selector() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("link-with-quoted-role.html"))
         .await
         .unwrap();

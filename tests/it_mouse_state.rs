@@ -29,7 +29,8 @@ async fn read_mstate(s: &headless_use::session::Session) -> Vec<Value> {
 async fn drag_intermediate_moves_carry_held_button_state() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .expect("session start");
     s.open(&srv.url("mouse-state.html")).await.unwrap();
@@ -103,7 +104,8 @@ async fn drag_intermediate_moves_carry_held_button_state() {
 async fn unknown_button_returns_invalid_input_error() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .expect("session start");
     s.open(&srv.url("mouse-state.html")).await.unwrap();
@@ -126,7 +128,8 @@ async fn unknown_button_returns_invalid_input_error() {
 async fn click_point_with_valid_button_works() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .expect("session start");
     s.open(&srv.url("mouse-state.html")).await.unwrap();

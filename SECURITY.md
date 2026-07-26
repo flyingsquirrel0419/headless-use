@@ -2,25 +2,21 @@
 
 ## Supported versions
 
-Only the latest release line receives security updates.
-
-| Version | Supported |
-|---------|-----------|
-| 0.1.x   | ✅        |
+No tagged release has been published yet. Only the `main` branch is supported;
+build from source and update to the latest `main` to receive security fixes.
 
 ## Reporting a vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, please report vulnerabilities privately:
-
-1. Go to the repository's **Security** tab → **Report a vulnerability**, or
-2. Email: **[INSERT SECURITY EMAIL]**
+Instead, please report privately via GitHub Security Advisories:
+https://github.com/flyingsquirrel0419/headless-use/security/advisories/new
+(equivalently, the repository's **Security** tab → **Report a vulnerability**).
 
 Include:
 - A description of the vulnerability and its impact
 - Steps to reproduce (proof of concept)
-- Affected version (`headless-use --version` or `cargo pkgid`)
+- Affected commit (`git rev-parse HEAD`) or `headless-use --version`
 - Suggested fix if you have one
 
 We will acknowledge receipt within 72 hours and aim to provide an initial

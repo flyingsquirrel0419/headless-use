@@ -62,8 +62,8 @@ pub async fn collect(page: &Page) -> Result<Vec<ConsoleEntry>, BrowserError> {
     "#;
     let v = page.evaluate(expr).await?;
     let s = v.value().and_then(|v| v.as_str()).unwrap_or("[]");
-    let arr: Vec<Value> =
-        serde_json::from_str(s).map_err(|e| BrowserError::Other(format!("console parse: {e}")))?;
+    let arr: Vec<Value> = serde_json::from_str(s)
+        .map_err(|e| BrowserError::Decode(format!("console buffer: {e}")))?;
     Ok(arr
         .into_iter()
         .map(|e| {

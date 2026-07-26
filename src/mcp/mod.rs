@@ -26,7 +26,7 @@ pub const SERVER_NAME: &str = "headless-use";
 
 /// The stdio MCP transport loop.
 pub mod transport {
-    use std::io::{self, BufRead, Write};
+    use std::io::{self, Write};
 
     use serde_json::{json, Value};
 
@@ -36,14 +36,13 @@ pub mod transport {
 
     /// Run the MCP stdio loop until stdin closes.
     pub async fn run(session: Session) -> i32 {
-        let stdin = io::stdin();
-        let mut reader = stdin.lock();
+        let mut lines = crate::protocol::stdin_lines();
         let mut stdout = io::stdout();
         let mut stderr = io::stderr();
 
         let mut initialized = false;
 
-        while let Some(line) = read_line(&mut reader) {
+        while let Some(line) = lines.recv().await {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -164,22 +163,6 @@ pub mod transport {
         }
         let text = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
         vec![json!({ "type": "text", "text": text })]
-    }
-
-    /// Read one line from a BufRead, returning None on EOF.
-    fn read_line(reader: &mut impl BufRead) -> Option<String> {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => None,
-            Ok(_) => Some(line),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                // Retry once; if still WouldBlock, give up to avoid a spin.
-                line.clear();
-                reader.read_line(&mut line).ok().map(|_| line)
-            }
-            Err(_) => None,
-        }
     }
 
     fn write_response(stdout: &mut impl Write, id: &Value, result: &Value) {

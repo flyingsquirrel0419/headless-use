@@ -22,7 +22,8 @@ async fn replay_reproduces_recorded_actions() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -64,7 +65,8 @@ async fn replay_reproduces_recorded_actions() {
     assert!(actions.contains("scroll"));
 
     // Phase 2: replay against a fresh session.
-    let s2 = headless_use::session::Session::start(common::test_launch())
+    let _s2_profile = common::TempProfile::new();
+    let s2 = headless_use::session::Session::start(_s2_profile.launch_opts())
         .await
         .unwrap();
     let result = replay::replay(&s2, &run_dir).await.unwrap();
@@ -119,7 +121,8 @@ async fn replay_reports_failure_point() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -151,7 +154,8 @@ async fn replay_reports_failure_point() {
     // re-resolve. To force a failure, we manually corrupt the actions by
     // replaying against a page where the ref doesn't exist — but since replay
     // re-observes, we instead test that replay handles a missing run dir.
-    let s2 = headless_use::session::Session::start(common::test_launch())
+    let _s2_profile = common::TempProfile::new();
+    let s2 = headless_use::session::Session::start(_s2_profile.launch_opts())
         .await
         .unwrap();
     let result = replay::replay(&s2, &run_dir).await.unwrap();
@@ -175,7 +179,8 @@ async fn replay_skips_redacted_sensitive_values() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -214,7 +219,8 @@ async fn replay_skips_redacted_sensitive_values() {
     );
 
     // Replay should skip the redacted value gracefully (not fail).
-    let s2 = headless_use::session::Session::start(common::test_launch())
+    let _s2_profile = common::TempProfile::new();
+    let s2 = headless_use::session::Session::start(_s2_profile.launch_opts())
         .await
         .unwrap();
     let result = replay::replay(&s2, &run_dir).await.unwrap();
@@ -231,7 +237,8 @@ async fn replay_skips_redacted_sensitive_values() {
 async fn runtime_trace_start_stop_works() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap();
 

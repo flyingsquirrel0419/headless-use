@@ -14,7 +14,7 @@ Install Chromium, or set `HEADLESS_USE_BROWSER_PATH=/path/to/chrome`.
 
 This happens when a value that looks like a URL is passed as a separate argv
 token. `headless-use` joins `--remote-debugging-port=N`, `--user-data-dir=...`
-with `=` to avoid this. If you pass `--extra-args`, avoid bare URL tokens.
+with `=` to avoid this.
 
 ## Shared library errors
 
@@ -32,7 +32,11 @@ Install `fonts-noto-cjk`. `doctor` checks for Korean-capable fonts.
 
 ## Screenshot is blank
 
-Wait for the page to load: `headless-use wait` before screenshotting. Ensure
+Wait for the page to load. `run` already waits until the page is stable after
+opening the URL; in a `serve`/`view` session, send the `wait` JSON-RPC method
+(`{"method":"wait","params":{"timeout":10000}}`) — or call the `browser_wait`
+MCP tool — before screenshotting. It returns once the network has been idle and
+the DOM quiet for a moment, or reports `stable: false` on timeout. Also ensure
 the viewport matches (`--viewport 1280x720`).
 
 ## Click does nothing

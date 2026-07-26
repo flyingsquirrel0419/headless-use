@@ -1,319 +1,77 @@
-//! Minimal PNG annotator: draws bounding boxes + ref labels over a screenshot.
+//! Screenshot annotator: draws bounding boxes + ref labels over a PNG.
 //!
 //! [Decision Log]
 //! - 목적과 의도: screenshot --annotate 가 요소의 ref/좌표를 PNG 위에
 //!   그려 비전 기반 에이전트가 정확한 클릭 좌표를 시각적으로 확인하게 함.
-//! - 기존 구현 및 제약 조건: 의존성 없이 PNG를 다루려면 zlib(DEFLATE)과
-//!   필터 역변환이 필요. 직접 구현은 버그 위험이 큼.
-//! - 검토한 주요 대안: image crate 도입(의존성 증가), PNG 픽셀 직접 조작
-//!   (zlib만 flate2로 처리).
-//! - 선택한 방식: flate2(zlib)만 추가하고 PNG 컨테이너/IHDR/필터는 직접
-//!   구현. CDP 스크린샷은 항상 8-bit RGBA 또는 RGB 비인터레이스 PNG.
-//! - 장점: 의존성 1개 추가로 끝. 단점: PNG 서브셋만 지원(충분함).
+//! - 기존 구현 및 제약 조건: 최초 구현은 "의존성을 늘리지 않는다"를 이유로
+//!   PNG 컨테이너/IHDR/필터 역변환/청크 CRC를 직접 구현하고 zlib만 flate2에
+//!   맡겼다. 그런데 바로 다음 기능 커밋(dewiggle)이 `image` 크레이트를 png
+//!   기능과 함께 추가해 버렸고, 직접 구현을 정당화하던 근거는 그때 사라졌다.
+//!   그 뒤로 같은 바이너리 안에 PNG 디코더가 둘 링크되어 있었다.
+//! - 검토한 주요 대안: 직접 구현 유지(현상 유지), dewiggle 쪽을 직접 구현으로
+//!   되돌리기.
+//! - 선택한 방식: 이미 의존하고 있는 `image` 크레이트로 디코딩/인코딩을
+//!   넘기고 직접 구현한 코덱(약 224줄)을 삭제. 그 결과 flate2 의존성도 함께
+//!   제거됐다.
+//! - 다른 대안 대신 이 방식을 선택한 이유: 검증된 코덱 하나가 자체 구현
+//!   서브셋보다 안전하고, 의존성 총량은 오히려 줄어든다.
+//! - 장점, 단점 및 영향: 인터레이스/16비트 PNG까지 자연히 지원된다. 모든
+//!   이미지가 RGBA로 정규화되므로 출력은 항상 RGBA PNG이며, RGB 입력에서도
+//!   라벨 배경의 알파가 실제로 블렌딩된다(이전에는 무시하고 덮어썼다).
 
-use std::io::{Read, Write};
-
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
+use image::{ImageFormat, RgbaImage};
 
 use crate::cdp::Viewport;
 use crate::observe::ElementRef;
 
-/// A decoded PNG (8-bit, RGB or RGBA, non-interlaced).
-pub struct PngImage {
-    /// Image width in pixels.
-    pub width: u32,
-    /// Image height in pixels.
-    pub height: u32,
-    /// 3 (RGB) or 4 (RGBA) bytes per pixel, row-major.
-    pub channels: u8,
-    /// Decoded pixel buffer.
-    pub data: Vec<u8>,
+/// Decode a PNG into an 8-bit RGBA image.
+///
+/// Everything is normalized to RGBA so the drawing code has one pixel layout to
+/// handle instead of branching on channel count.
+pub fn decode_png(bytes: &[u8]) -> Result<RgbaImage, String> {
+    let img = image::load_from_memory_with_format(bytes, ImageFormat::Png)
+        .map_err(|e| format!("decode png: {e}"))?;
+    Ok(img.to_rgba8())
 }
 
-impl PngImage {
-    /// Bytes per row.
-    fn stride(&self) -> usize {
-        self.width as usize * self.channels as usize
-    }
+/// Encode an RGBA image as a PNG.
+pub fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, String> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img.clone())
+        .write_to(&mut buf, ImageFormat::Png)
+        .map_err(|e| format!("encode png: {e}"))?;
+    Ok(buf.into_inner())
+}
 
-    /// Put a pixel at (x,y), clamping to bounds. Preserves alpha if present.
-    fn put_pixel(&mut self, x: i64, y: i64, color: [u8; 4]) {
-        if x < 0 || y < 0 {
-            return;
-        }
-        let xu = x as usize;
-        let yu = y as usize;
-        if xu >= self.width as usize || yu >= self.height as usize {
-            return;
-        }
-        let i = yu * self.stride() + xu * self.channels as usize;
-        let n = self.channels as usize;
-        for c in 0..n {
-            let v = if n == 4 {
-                // Premultiply-ish: blend over existing with given alpha.
-                let a = color[3] as u32;
-                let cur = self.data[i + c] as u32;
-                let new = color[c] as u32;
-                ((new * a + cur * (255 - a)) / 255) as u8
-            } else {
-                // No alpha channel: take the RGB as-is (opaque).
-                color[c]
-            };
-            self.data[i + c] = v;
-        }
+/// Blend `color` over the pixel at (x, y), ignoring out-of-bounds coordinates.
+///
+/// Source-over with a straight (non-premultiplied) alpha, applied to all four
+/// channels — the same arithmetic the previous hand-rolled surface used, so
+/// annotated output is unchanged for the RGBA screenshots CDP actually returns.
+fn put_pixel(img: &mut RgbaImage, x: i64, y: i64, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= img.width() as i64 || y >= img.height() as i64 {
+        return;
     }
-
-    /// Draw a 1px-thick rectangle outline at (x,y,w,h).
-    fn draw_rect(&mut self, x: i64, y: i64, w: i64, h: i64, color: [u8; 4]) {
-        let x2 = x + w;
-        let y2 = y + h;
-        for dx in 0..=w {
-            self.put_pixel(x + dx, y, color);
-            self.put_pixel(x + dx, y2, color);
-        }
-        for dy in 0..=h {
-            self.put_pixel(x, y + dy, color);
-            self.put_pixel(x2, y + dy, color);
-        }
+    let px = img.get_pixel_mut(x as u32, y as u32);
+    let a = color[3] as u32;
+    for (dst, &new) in px.0.iter_mut().zip(color.iter()) {
+        let cur = *dst as u32;
+        *dst = ((new as u32 * a + cur * (255 - a)) / 255) as u8;
     }
 }
 
-/// Parse a PNG chunk's length and type starting at `pos`. Returns (len, type, header_end).
-fn read_chunk(buf: &[u8], pos: usize) -> Option<(u32, [u8; 4], usize)> {
-    if pos + 8 > buf.len() {
-        return None;
+/// Draw a 1px-thick rectangle outline at (x, y, w, h).
+fn draw_rect(img: &mut RgbaImage, x: i64, y: i64, w: i64, h: i64, color: [u8; 4]) {
+    let x2 = x + w;
+    let y2 = y + h;
+    for dx in 0..=w {
+        put_pixel(img, x + dx, y, color);
+        put_pixel(img, x + dx, y2, color);
     }
-    let len = u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-    let ctype = [buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]];
-    // Chunk data starts after the 8-byte header; CRC follows the data.
-    Some((len, ctype, pos + 8))
-}
-
-/// Decode a PNG into an 8-bit image. Supports color types 2 (RGB), 6 (RGBA),
-/// and 0 (grayscale) / 4 (grayscale+alpha) — the formats CDP screenshots use.
-pub fn decode_png(bytes: &[u8]) -> Result<PngImage, String> {
-    if bytes.len() < 8 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
-        return Err("not a PNG".into());
+    for dy in 0..=h {
+        put_pixel(img, x, y + dy, color);
+        put_pixel(img, x2, y + dy, color);
     }
-    let mut pos = 8;
-    let mut width = 0u32;
-    let mut height = 0u32;
-    let mut bit_depth = 0u8;
-    let mut color_type = 0u8;
-    let mut idat: Vec<u8> = Vec::new();
-    let mut palette: Vec<[u8; 3]> = Vec::new();
-
-    while let Some((len, ctype, data_start)) = read_chunk(bytes, pos) {
-        let data_end = data_start + len as usize;
-        if data_end + 4 > bytes.len() {
-            return Err("truncated PNG chunk".into());
-        }
-        let data = &bytes[data_start..data_end];
-        match &ctype {
-            b"IHDR" => {
-                if data.len() < 13 {
-                    return Err("short IHDR".into());
-                }
-                width = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-                height = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-                bit_depth = data[8];
-                color_type = data[9];
-                if data[10] != 0 || data[11] != 0 || data[12] != 0 {
-                    return Err("unsupported PNG (interlaced or custom)".into());
-                }
-            }
-            b"PLTE" => {
-                for chunk in data.chunks(3) {
-                    if chunk.len() == 3 {
-                        palette.push([chunk[0], chunk[1], chunk[2]]);
-                    }
-                }
-            }
-            b"IDAT" => idat.extend_from_slice(data),
-            b"IEND" => break,
-            _ => {}
-        }
-        pos = data_end + 4; // skip CRC
-    }
-
-    if bit_depth != 8 {
-        return Err(format!("unsupported bit depth {bit_depth} (expected 8)"));
-    }
-    let channels: u8 = match color_type {
-        0 => 1, // grayscale
-        2 => 3, // RGB
-        3 => 1, // palette (expanded to RGB below)
-        4 => 2, // grayscale + alpha
-        6 => 4, // RGBA
-        _ => return Err(format!("unsupported color type {color_type}")),
-    };
-
-    // Decompress the concatenated IDAT stream.
-    let mut decoder = ZlibDecoder::new(&idat[..]);
-    let mut raw = Vec::new();
-    decoder
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("zlib inflate: {e}"))?;
-
-    // Undo PNG row filters. Each row is prefixed by a 1-byte filter type.
-    let bpp = channels as usize; // bytes per pixel (8-bit)
-    let stride = width as usize * bpp;
-    let mut prev_row = vec![0u8; stride];
-    let mut out = vec![0u8; (width as usize) * (height as usize) * bpp];
-
-    for row in 0..height as usize {
-        let off = row * (stride + 1);
-        if off + 1 + stride > raw.len() {
-            return Err("truncated filtered data".into());
-        }
-        let filter = raw[off];
-        let in_row = &raw[off + 1..off + 1 + stride];
-        let cur = &mut out[row * stride..row * stride + stride];
-        unfilter_row(filter, bpp, in_row, &prev_row, cur);
-        prev_row.copy_from_slice(cur);
-    }
-
-    // Expand palette to RGB.
-    if color_type == 3 {
-        let mut rgb = Vec::with_capacity((width * height) as usize * 3);
-        for &b in out.iter().take((width * height) as usize) {
-            let idx = b as usize;
-            let p = palette.get(idx).copied().unwrap_or([0, 0, 0]);
-            rgb.extend_from_slice(&p);
-        }
-        return Ok(PngImage {
-            width,
-            height,
-            channels: 3,
-            data: rgb,
-        });
-    }
-
-    Ok(PngImage {
-        width,
-        height,
-        channels,
-        data: out,
-    })
-}
-
-/// Apply a PNG row filter to reconstruct the raw scanline.
-fn unfilter_row(filter: u8, bpp: usize, cur_in: &[u8], prev: &[u8], out: &mut [u8]) {
-    let n = out.len();
-    let paeth = |a: u8, b: u8, c: u8| -> u8 {
-        let p = a as i32 + b as i32 - c as i32;
-        let pa = (p - a as i32).unsigned_abs();
-        let pb = (p - b as i32).unsigned_abs();
-        let pc = (p - c as i32).unsigned_abs();
-        if pa <= pb && pa <= pc {
-            a
-        } else if pb <= pc {
-            b
-        } else {
-            c
-        }
-    };
-    match filter {
-        0 => out.copy_from_slice(cur_in),
-        1 => {
-            for i in 0..n {
-                let left = if i >= bpp { out[i - bpp] } else { 0 };
-                out[i] = cur_in[i].wrapping_add(left);
-            }
-        }
-        2 => {
-            for i in 0..n {
-                out[i] = cur_in[i].wrapping_add(prev[i]);
-            }
-        }
-        3 => {
-            for i in 0..n {
-                let left = if i >= bpp { out[i - bpp] } else { 0 };
-                let up = prev[i];
-                out[i] = cur_in[i].wrapping_add(((left as u16 + up as u16) / 2) as u8);
-            }
-        }
-        4 => {
-            for i in 0..n {
-                let left = if i >= bpp { out[i - bpp] } else { 0 };
-                let up = prev[i];
-                let upleft = if i >= bpp { prev[i - bpp] } else { 0 };
-                out[i] = cur_in[i].wrapping_add(paeth(left, up, upleft));
-            }
-        }
-        _ => out.copy_from_slice(cur_in),
-    }
-}
-
-/// Encode an 8-bit RGBA image back to a PNG (filter type 0 = None per row).
-pub fn encode_png(img: &PngImage) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&img.width.to_be_bytes());
-    ihdr.extend_from_slice(&img.height.to_be_bytes());
-    ihdr.push(8); // bit depth
-    ihdr.push(match img.channels {
-        3 => 2,
-        4 => 6,
-        1 => 0,
-        2 => 4,
-        _ => return Err("unsupported channel count".into()),
-    });
-    ihdr.push(0); // compression
-    ihdr.push(0); // filter
-    ihdr.push(0); // interlace
-    write_chunk(&mut out, b"IHDR", &ihdr);
-
-    // Filtered data: each row prefixed with filter byte 0 (None).
-    let stride = img.stride();
-    let mut filtered = Vec::with_capacity((img.height as usize) * (stride + 1));
-    for row in 0..img.height as usize {
-        filtered.push(0);
-        filtered.extend_from_slice(&img.data[row * stride..row * stride + stride]);
-    }
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(&filtered)
-        .map_err(|e| format!("zlib deflate write: {e}"))?;
-    let compressed = encoder
-        .finish()
-        .map_err(|e| format!("zlib deflate finish: {e}"))?;
-    write_chunk(&mut out, b"IDAT", &compressed);
-    write_chunk(&mut out, b"IEND", &[]);
-    Ok(out)
-}
-
-fn write_chunk(out: &mut Vec<u8>, ctype: &[u8; 4], data: &[u8]) {
-    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    out.extend_from_slice(ctype);
-    out.extend_from_slice(data);
-    let crc = crc32(ctype, data);
-    out.extend_from_slice(&crc.to_be_bytes());
-}
-
-/// CRC32 (PNG uses the IEEE polynomial).
-fn crc32(ctype: &[u8], data: &[u8]) -> u32 {
-    let mut table = [0u32; 256];
-    for n in 0..256u32 {
-        let mut c = n;
-        for _ in 0..8 {
-            if c & 1 != 0 {
-                c = 0xedb88320 ^ (c >> 1);
-            } else {
-                c >>= 1;
-            }
-        }
-        table[n as usize] = c;
-    }
-    let mut crc = 0xffffffff;
-    for &b in ctype.iter().chain(data.iter()) {
-        crc = table[((crc ^ b as u32) & 0xff) as usize] ^ (crc >> 8);
-    }
-    crc ^ 0xffffffff
 }
 
 /// A 5x7 bitmap font for single-digit-ish labels. Each glyph is 5 wide, 7 tall.
@@ -551,7 +309,7 @@ static FONT: &[(&str, &[u8; 7])] = &[
 ];
 
 /// Draw a short label at (x, y) using the 5x7 bitmap font, 1px gap between glyphs.
-fn draw_label(img: &mut PngImage, x: i64, y: i64, text: &str, color: [u8; 4]) {
+fn draw_label(img: &mut RgbaImage, x: i64, y: i64, text: &str, color: [u8; 4]) {
     let mut cx = x;
     for ch in text.chars() {
         let upper = ch.to_ascii_uppercase().to_string();
@@ -559,7 +317,7 @@ fn draw_label(img: &mut PngImage, x: i64, y: i64, text: &str, color: [u8; 4]) {
             for (row, bits) in glyph.iter().enumerate() {
                 for col in 0..5 {
                     if (bits >> (4 - col)) & 1 != 0 {
-                        img.put_pixel(cx + col, y + row as i64, color);
+                        put_pixel(img, cx + col, y + row as i64, color);
                     }
                 }
             }
@@ -591,7 +349,7 @@ pub fn annotate(
         let y = el.y;
         let w = el.width.max(1);
         let h = el.height.max(1);
-        img.draw_rect(x, y, w, h, color);
+        draw_rect(&mut img, x, y, w, h, color);
         // Draw the ref token label in the top-left corner of the box.
         let token = if el.ref_token.is_empty() {
             format!("@e{}", el.ref_id)
@@ -605,7 +363,7 @@ pub fn annotate(
         let lh = 9;
         for dy in 0..lh {
             for dx in 0..lw {
-                img.put_pixel(x + dx, y + dy, label_bg);
+                put_pixel(&mut img, x + dx, y + dy, label_bg);
             }
         }
         draw_label(&mut img, x + 2, y + 1, label, label_fg);
@@ -619,32 +377,58 @@ mod tests {
     use crate::cdp::Viewport;
     use crate::observe::ElementRef;
 
+    /// Build a solid PNG. `channels` selects the *source* color type so the
+    /// decoder is still exercised on RGB and grayscale inputs, even though
+    /// everything is normalized to RGBA once decoded.
     fn solid_png(w: u32, h: u32, channels: u8, fill: u8) -> Vec<u8> {
-        let img = PngImage {
-            width: w,
-            height: h,
-            channels,
-            data: vec![fill; (w as usize) * (h as usize) * channels as usize],
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let dynimg = match channels {
+            1 => image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(
+                w,
+                h,
+                image::Luma([fill]),
+            )),
+            3 => image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                w,
+                h,
+                image::Rgb([fill, fill, fill]),
+            )),
+            _ => image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                w,
+                h,
+                image::Rgba([fill, fill, fill, fill]),
+            )),
         };
-        encode_png(&img).expect("encode")
+        dynimg.write_to(&mut buf, ImageFormat::Png).expect("encode");
+        buf.into_inner()
+    }
+
+    /// An RGB source decodes to RGBA with an opaque alpha channel.
+    #[test]
+    fn png_rgb_source_decodes_to_opaque_rgba() {
+        let decoded = decode_png(&solid_png(4, 3, 3, 7)).expect("decode");
+        assert_eq!(decoded.width(), 4);
+        assert_eq!(decoded.height(), 3);
+        assert!(decoded.pixels().all(|p| p.0 == [7, 7, 7, 255]));
     }
 
     #[test]
-    fn png_round_trips_rgb() {
-        let orig = solid_png(4, 3, 3, 7);
-        let decoded = decode_png(&orig).expect("decode");
-        assert_eq!(decoded.width, 4);
-        assert_eq!(decoded.height, 3);
-        assert_eq!(decoded.channels, 3);
-        assert!(decoded.data.iter().all(|&b| b == 7));
+    fn png_rgba_source_round_trips() {
+        let decoded = decode_png(&solid_png(5, 5, 4, 9)).expect("decode");
+        assert!(decoded.pixels().all(|p| p.0 == [9, 9, 9, 9]));
+    }
+
+    /// Grayscale is a color type the old hand-rolled decoder claimed to support;
+    /// pinned here so the swap did not quietly drop it.
+    #[test]
+    fn png_grayscale_source_decodes() {
+        let decoded = decode_png(&solid_png(3, 2, 1, 40)).expect("decode");
+        assert!(decoded.pixels().all(|p| p.0 == [40, 40, 40, 255]));
     }
 
     #[test]
-    fn png_round_trips_rgba() {
-        let orig = solid_png(5, 5, 4, 9);
-        let decoded = decode_png(&orig).expect("decode");
-        assert_eq!(decoded.channels, 4);
-        assert!(decoded.data.iter().all(|&b| b == 9));
+    fn decode_rejects_non_png() {
+        assert!(decode_png(b"not a png at all").is_err());
     }
 
     fn el(x: i64, y: i64, w: i64, h: i64, visual: bool, id: u32) -> ElementRef {
@@ -725,18 +509,7 @@ mod tests {
         );
     }
 
-    fn pixel(img: &PngImage, x: u32, y: u32) -> [u8; 4] {
-        let stride = img.width as usize * img.channels as usize;
-        let i = y as usize * stride + x as usize * img.channels as usize;
-        match img.channels {
-            3 => [img.data[i], img.data[i + 1], img.data[i + 2], 255],
-            4 => [
-                img.data[i],
-                img.data[i + 1],
-                img.data[i + 2],
-                img.data[i + 3],
-            ],
-            _ => [0, 0, 0, 0],
-        }
+    fn pixel(img: &RgbaImage, x: u32, y: u32) -> [u8; 4] {
+        img.get_pixel(x, y).0
     }
 }

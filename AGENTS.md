@@ -10,7 +10,9 @@ the repository. Documentation is part of the done criteria, not an optional add-
 - Overall project structure and each module's responsibility.
 - Relationships between modules and main data flows.
 - The tech stack used and the rationale/tradeoffs for each choice.
-- Architecture Decision Records (ADRs) for important decisions.
+- The rationale for important decisions, recorded as `[Decision Log]` comments
+  next to the code they describe (see below). This project keeps decision
+  records in-source rather than as separate ADR files.
 - Key information for building, testing, and deploying.
 
 When a code change makes existing docs inaccurate, the docs are updated in the same
@@ -46,8 +48,12 @@ src/
 ├── browser/   process launch + CDP transport + Page + stealth (headless signal suppression)
 ├── cdp/       WebSocket JSON-RPC client, typed CDP types, errors
 ├── input/     mouse + keyboard engines (real Input.* events)
-├── observe/   AX/DOM extraction + semantic @eN references
-├── session/   high-level ops, console, network, wait
+├── observe/   DOM-based interactive-element extraction + semantic @eN references,
+│              screenshot annotation, dewiggle (pixel-only wobble reversal)
+├── session/   high-level ops; resolve (@eN -> coords), capture (screenshot/
+│             annotate/dewiggle), console, network, network_tracker, wait
+├── viewer/    live MJPEG viewer: CDP screencast capture + localhost HTTP server
+│              + cursor overlay
 ├── trace/     action recording + replay + report.html
 ├── protocol/  JSON-RPC over stdio
 ├── cli/       clap CLI + rpc dispatch + commands

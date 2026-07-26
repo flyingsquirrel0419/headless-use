@@ -13,10 +13,11 @@ Browser Runtime Core
       ├─ CDP Transport (WebSocket)
       ├─ Page / Target Manager
       ├─ Input Engine (mouse, keyboard, drag)
-      ├─ Observation Engine (AX/DOM, references)
+      ├─ Observation Engine (DOM extraction, references)
       ├─ Stability Detector (wait)
       ├─ Console/Network Collector
-      ├─ Screenshot Engine
+      ├─ Screenshot Engine (capture, annotate, dewiggle)
+      ├─ Live Viewer (screencast + MJPEG HTTP + cursor overlay)
       └─ Trace/Replay Engine
       ▼
 chrome-headless-shell / Chromium
@@ -93,6 +94,57 @@ computes accessible name/role/bounds, and returns a compact JSON array. The
 Rust side assigns `@eN` references in reading order. References are re-resolved
 to **current** coordinates at action time (not cached), so layout shifts within
 a generation still resolve.
+
+## Screenshot annotation (`observe/annotate.rs`)
+
+`screenshot --annotate` draws bounding boxes and `@eN` labels straight onto the
+captured PNG so a vision-based agent can read exact click coordinates off the
+image. PNG container, IHDR and row filters are handled in-crate; only `flate2`
+is used, for the zlib stream. CDP screenshots are always 8-bit RGB/RGBA
+non-interlaced, so that subset is enough.
+
+## Dewiggle (`observe/dewiggle.rs`)
+
+Reverses per-glyph vertical wobble in animated text CAPTCHAs using **captured
+pixels only** — no answer arrays, no framework props, no DOM text. It captures
+N frames of a region, computes each column's intensity-weighted vertical ink
+centroid per frame, takes the cross-frame average as that column's neutral
+baseline, shifts every frame's columns onto their baseline, and averages the
+realigned frames. Aligned ink accumulates while noise averages toward gray, so
+the glyphs sharpen. Optional `--chars N` segments the result into equal-width
+glyph bands and saves per-glyph crops. The page is never mutated (no clock
+freezing, no script injection), which is why realignment is done offline on
+pixels rather than by controlling the animation.
+
+## Live viewer (`viewer/`)
+
+On headless Linux there is no visible OS cursor for `Input.dispatchMouseEvent`,
+so an agent's clicks and drags are invisible. `headless-use view` fixes both
+halves of that:
+
+- `viewer/screencast.rs` subscribes to CDP `Page.startScreencast` /
+  `Page.screencastFrame`, decodes each base64 JPEG, acks it (Chrome stops
+  sending after ~2 unacked frames), and keeps **only the newest** frame in a
+  watch channel — backpressure drops stale frames rather than queuing them.
+  `Page.frameNavigated` restarts the screencast, and an idle re-arm timer
+  re-issues `startScreencast` when no frame has arrived for a while, because
+  Chrome only emits frames on repaint (static pages and iframe-heavy sites
+  otherwise freeze the stream).
+- `viewer/http.rs` is a hand-written HTTP/1.0 server on a tokio `TcpListener`
+  (no axum/hyper dependency for one endpoint): `/` serves a small HTML index,
+  `/stream` serves `multipart/x-mixed-replace` MJPEG pulled from the shared
+  `Screencast`.
+- `viewer/cursor-overlay.js` is injected into the page (via
+  `Page::inject_cursor_overlay`) so the synthetic cursor position is visible in
+  the stream. It ships inside the binary through `include_str!`.
+
+The viewer binds to `127.0.0.1:7780` by default. `--viewer-host` can widen that
+for remote viewing. Access is gated by a token carried as `?token=…`, generated
+at startup unless pinned with `--viewer-token`: **required** on a non-loopback
+bind, optional on loopback. The stream carries whatever the page shows,
+including logged-in content, and is plain HTTP — see
+[security.md](security.md#access-token) for what the token does and does not
+protect against. The CDP endpoint is unaffected and stays loopback-only.
 
 ## Session lifecycle
 

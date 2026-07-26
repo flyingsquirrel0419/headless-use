@@ -186,11 +186,64 @@ pub struct BrowserProcess {
     /// because the per-page half of stealth (UA override, pre-load script) needs
     /// the same version-derived values the launch flags were built from.
     stealth: Option<crate::browser::stealth::StealthProfile>,
+    /// Handle into the process-wide cleanup registry (see
+    /// [`install_process_guards`]), removed once this process cleans itself up.
+    cleanup_id: u64,
+    /// Claims on the auto-picked CDP port and Xvfb display, held for the life of
+    /// the process so no concurrent launch in this process reuses either. Never
+    /// read; the value is the `Drop`.
+    _reservations: Vec<Reservation>,
 }
 
 impl BrowserProcess {
     /// Launch Chrome and wait until the CDP HTTP endpoint responds.
+    ///
+    /// With `opts.port == 0` the port is auto-picked, and a launch that fails
+    /// the way a lost port race fails (the browser exits within seconds of
+    /// spawning, because it could not open the debugging port) is retried with a
+    /// fresh port. Retries are deliberately limited to that fast failure: a
+    /// browser that spawns but never answers burns the full 30s readiness
+    /// deadline, and retrying *that* would turn one 30s failure into four.
     pub async fn launch(opts: LaunchOptions) -> Result<Self, BrowserError> {
+        if opts.port != 0 {
+            return Self::launch_once(&opts, None).await;
+        }
+        const PORT_ATTEMPTS: u32 = 4;
+        let mut last: Option<BrowserError> = None;
+        for attempt in 1..=PORT_ATTEMPTS {
+            let reservation = reserve_free_port()
+                .ok_or_else(|| BrowserError::LaunchFailed("no free port".into()))?;
+            let port = reservation.value;
+            match Self::launch_once(&opts, Some(reservation)).await {
+                Ok(proc) => return Ok(proc),
+                Err(e) if is_port_race_failure(&e) && attempt < PORT_ATTEMPTS => {
+                    // Debug, not warn. "Exited early" is also how a browser with
+                    // a missing shared library or an unwritable $HOME fails, and
+                    // at the default log level three warnings blaming the port
+                    // are worse than silence: they point at the wrong cause for
+                    // the most common broken-environment case. If every attempt
+                    // fails, the last real error is returned and `doctor`
+                    // explains it.
+                    tracing::debug!(
+                        port,
+                        attempt,
+                        error = %e,
+                        "browser launch failed in the way a taken debugging port fails; \
+                         re-picking a port and retrying"
+                    );
+                    last = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| BrowserError::LaunchFailed("no free port".into())))
+    }
+
+    /// One launch attempt on an already-chosen port.
+    async fn launch_once(
+        opts: &LaunchOptions,
+        port_reservation: Option<Reservation>,
+    ) -> Result<Self, BrowserError> {
         let exe = match opts.browser_path.clone() {
             Some(p) if p.is_file() => p,
             _ => discover_browser_with(opts.stealth)?,
@@ -203,11 +256,12 @@ impl BrowserProcess {
             None
         };
 
-        let port = if opts.port == 0 {
-            pick_free_port().ok_or_else(|| BrowserError::LaunchFailed("no free port".into()))?
-        } else {
-            opts.port
+        let port = match &port_reservation {
+            Some(r) => r.value,
+            None => opts.port,
         };
+        let auto_port = port_reservation.is_some();
+        let mut reservations: Vec<Reservation> = port_reservation.into_iter().collect();
 
         // Temp user-data dir unless one is provided.
         let (temp_dir, owns_temp) = match &opts.user_data_dir {
@@ -222,7 +276,8 @@ impl BrowserProcess {
         // Xvfb handling.
         let (xvfb_display, xvfb_pid) = match opts.compat {
             CompatMode::Xvfb => {
-                let (d, pid) = start_xvfb().await?;
+                let (d, pid, reservation) = start_xvfb().await?;
+                reservations.push(reservation);
                 (Some(d), Some(pid))
             }
             CompatMode::Chromium => (None, None),
@@ -317,9 +372,37 @@ impl BrowserProcess {
             );
         }
 
+        // Last check before the child takes the port: the probe in
+        // `reserve_free_port` happened before the temp dir, Xvfb and the flag
+        // list were built, which is plenty of time for another process to bind
+        // it. Re-checking here shrinks the window to the microseconds between
+        // this bind and Chrome's own; it does not close it (see
+        // `reserve_free_port`), so `launch` also retries.
+        if auto_port && !port_is_free(port) {
+            // Nothing is registered for cleanup yet, so undo by hand before the
+            // retry: otherwise every lost race leaks a profile dir and an X
+            // server.
+            if owns_temp {
+                remove_dir_with_retry(&temp_dir, 3);
+            }
+            if let Some(pid) = xvfb_pid {
+                let _ = std::process::Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .output();
+            }
+            return Err(BrowserError::LaunchFailed(format!(
+                "debugging port {port} was taken between selection and launch"
+            )));
+        }
+
         let child = cmd
             .spawn()
             .map_err(|e| BrowserError::LaunchFailed(format!("spawn {exe:?}: {e}")))?;
+
+        // Register before anything can fail, so a launch that dies during
+        // `wait_ready` still gets its process and profile dir reclaimed.
+        let cleanup_id =
+            register_cleanup(child.id(), owns_temp.then(|| temp_dir.clone()), xvfb_pid);
 
         let proc = Self {
             child: std::sync::Mutex::new(Some(child)),
@@ -330,6 +413,8 @@ impl BrowserProcess {
             xvfb_display,
             xvfb_pid,
             stealth,
+            cleanup_id,
+            _reservations: reservations,
         };
 
         // Wait for CDP HTTP to be ready.
@@ -409,6 +494,7 @@ impl BrowserProcess {
 
     /// Kill the process and remove temp dirs. Idempotent.
     pub fn kill_and_cleanup(&self) {
+        unregister_cleanup(self.cleanup_id);
         // start_kill sends SIGKILL immediately (non-async). We then take the child
         // out of the mutex and reap it on a short-lived blocking thread so we don't
         // block the Drop context (which may run inside a tokio runtime) and so we
@@ -433,7 +519,12 @@ impl BrowserProcess {
         }
         if self.owns_temp {
             if let Some(d) = &self.temp_dir {
-                let _ = std::fs::remove_dir_all(d);
+                // Retried for the same reason as in `cleanup_all_spawned`:
+                // Chrome's helper processes may still be flushing into the
+                // profile when the main process is reaped, and a single
+                // `remove_dir_all` then fails with ENOTEMPTY and leaves the
+                // directory behind for good.
+                remove_dir_with_retry(d, 5);
             }
         }
         if let Some(pid) = self.xvfb_pid {
@@ -452,35 +543,305 @@ impl Drop for BrowserProcess {
     }
 }
 
-/// Pick a free TCP port by binding to :0.
-fn pick_free_port() -> Option<u16> {
+/// What has to be cleaned up for one spawned browser, as plain data.
+///
+/// Deliberately not a handle to [`BrowserProcess`]: the signal handler and the
+/// panic hook run on threads that own nothing, and may run while another thread
+/// holds the process mutex. Plain pids and paths can always be acted on.
+#[derive(Debug, Clone)]
+struct CleanupRecord {
+    id: u64,
+    chrome_pid: Option<u32>,
+    temp_dir: Option<PathBuf>,
+    xvfb_pid: Option<u32>,
+}
+
+/// Everything this process has spawned and not yet cleaned up.
+static SPAWNED: std::sync::Mutex<Vec<CleanupRecord>> = std::sync::Mutex::new(Vec::new());
+static NEXT_CLEANUP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn register_cleanup(
+    chrome_pid: Option<u32>,
+    temp_dir: Option<PathBuf>,
+    xvfb_pid: Option<u32>,
+) -> u64 {
+    let id = NEXT_CLEANUP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut g) = SPAWNED.lock() {
+        g.push(CleanupRecord {
+            id,
+            chrome_pid,
+            temp_dir,
+            xvfb_pid,
+        });
+    }
+    id
+}
+
+fn unregister_cleanup(id: u64) {
+    if let Ok(mut g) = SPAWNED.lock() {
+        g.retain(|r| r.id != id);
+    }
+}
+
+/// Kill every browser this process spawned and remove its temp profile dirs.
+///
+/// Safe to call from a signal handler task or a panic hook, and safe to call
+/// more than once.
+pub fn cleanup_all_spawned() {
+    let records = match SPAWNED.lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for r in records {
+        if let Some(pid) = r.chrome_pid {
+            // `kill` the binary rather than libc: this crate is
+            // `#![forbid(unsafe_code)]`, and the process is going away anyway.
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .output();
+            wait_for_exit(pid, std::time::Duration::from_secs(2));
+        }
+        if let Some(pid) = r.xvfb_pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
+        }
+        if let Some(d) = r.temp_dir {
+            // Removal is retried, and the failure is reported rather than
+            // swallowed. SIGKILL is delivered asynchronously: deleting the
+            // profile the instant after signalling races Chrome's own writers
+            // and fails with ENOTEMPTY, which is how the temp dir survived
+            // every SIGTERM while the process itself was correctly killed.
+            remove_dir_with_retry(&d, 5);
+        }
+    }
+}
+
+/// Block until `pid` is gone, or `budget` elapses.
+///
+/// Reads `/proc/<pid>` rather than `waitpid`: the caller is a signal-handler
+/// task or a panic hook that does not own the child handle.
+fn wait_for_exit(pid: u32, budget: std::time::Duration) {
+    let deadline = Instant::now() + budget;
+    let proc_entry = PathBuf::from(format!("/proc/{pid}"));
+    while proc_entry.exists() && Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Remove a directory tree, retrying while a dying process still writes to it.
+fn remove_dir_with_retry(dir: &Path, attempts: u32) {
+    for attempt in 0..attempts {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) if attempt + 1 == attempts => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "could not remove temp profile directory; it will need manual cleanup"
+                );
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Install process-wide cleanup for signals and panics.
+///
+/// ## Why this exists
+/// Cleanup used to live entirely in `Drop`. `Drop` does not run when the
+/// process is killed by SIGTERM (every container stop, every CI cancel, every
+/// supervisor restart), and it does not run on panic either, because the
+/// release profile sets `panic = "abort"`. Both cases leaked a Chrome process
+/// and a temp profile directory — on a CI box that is a slow disk-fill.
+///
+/// Only `launch` installed a `ctrl_c` handler; `serve`, `mcp`, `view` and `run`
+/// had none, which is precisely backwards, since those are the long-lived ones.
+///
+/// Idempotent: repeated calls install the hooks once.
+pub fn install_process_guards() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            cleanup_all_spawned();
+            previous(info);
+        }));
+
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            tokio::spawn(async move {
+                let mut term = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot listen for SIGTERM");
+                        return;
+                    }
+                };
+                let mut int = match signal(SignalKind::interrupt()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot listen for SIGINT");
+                        return;
+                    }
+                };
+                let (code, name) = tokio::select! {
+                    _ = term.recv() => (143, "SIGTERM"),
+                    _ = int.recv() => (130, "SIGINT"),
+                };
+                tracing::info!(
+                    signal = name,
+                    "shutting down; cleaning up browser processes"
+                );
+                cleanup_all_spawned();
+                std::process::exit(code);
+            });
+        }
+    });
+}
+
+/// Does this launch failure look like the debugging port was taken by someone
+/// else after we picked it?
+///
+/// Two shapes: the pre-spawn re-check caught it, or Chrome could not open the
+/// port and exited on its own within the readiness poll. A readiness *timeout*
+/// is not included — the browser is alive and something else is wrong, and
+/// retrying would cost another 30s per attempt.
+///
+/// "Exited early" is not exclusive to a port collision (a browser missing a
+/// shared library exits early too), so a genuinely broken install is retried a
+/// few times before failing. That costs a handful of sub-second spawns, and the
+/// last attempt's real error is what the caller sees — the diagnostic is not
+/// swallowed.
+fn is_port_race_failure(e: &BrowserError) -> bool {
+    match e {
+        BrowserError::LaunchFailed(msg) => {
+            msg.contains("was taken between selection and launch") || msg.contains("exited early")
+        }
+        _ => false,
+    }
+}
+
+/// Numbers this process has claimed for a not-yet-started child.
+///
+/// ## Why a process-wide claim, not just a probe
+/// Both resources below are picked by *probing* — bind `127.0.0.1:0` and read
+/// the port back, or look for an X socket that does not exist yet. Neither
+/// probe holds the resource: the listener has to be closed before Chrome can
+/// bind the same port, and the X socket only appears once Xvfb starts. So two
+/// launches racing inside one process (exactly what `cargo test
+/// --test-threads=2` does) could probe in the gap and be handed the same number,
+/// and the loser died with an unhelpful launch error.
+///
+/// A claim list removes the in-process half of the race outright: a number
+/// handed out here is not handed out again until the [`Reservation`] is
+/// dropped. It cannot remove the cross-process half — see [`reserve_free_port`].
+static RESERVED_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+static RESERVED_DISPLAYS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// A claimed port or display number, released on drop.
+struct Reservation {
+    value: u16,
+    set: &'static std::sync::Mutex<Vec<u16>>,
+}
+
+impl Reservation {
+    /// Claim `value` unless this process already handed it out.
+    fn try_claim(set: &'static std::sync::Mutex<Vec<u16>>, value: u16) -> Option<Self> {
+        let mut g = set.lock().unwrap_or_else(|e| e.into_inner());
+        if g.contains(&value) {
+            return None;
+        }
+        g.push(value);
+        Some(Self { value, set })
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut g = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|v| *v != self.value);
+    }
+}
+
+/// Probe for a free TCP port by binding `127.0.0.1:0` and reading it back.
+///
+/// The listener is closed on return — it has to be, or Chrome could not bind
+/// the port itself. Use [`reserve_free_port`], which layers the process-wide
+/// claim and a re-check on top.
+fn probe_free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0")
         .ok()
         .and_then(|l| l.local_addr().ok().map(|a| a.port()))
 }
 
-/// Pick a display number no X server is currently using.
+/// Can we still bind `port` right now?
+///
+/// Called immediately before spawning Chrome to catch a port that was taken
+/// since it was probed. The listener is dropped at the end of the expression so
+/// the port is free again for the child.
+fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Reserve a port for a browser we are about to launch.
+///
+/// ## Residual race (not eliminated, only narrowed)
+/// Between this function releasing its probe listener and Chrome binding the
+/// port, any *other process* on the host can take it — the kernel offers no way
+/// to hand a bound listener to a child that wants to bind it itself. Two things
+/// narrow the window: the claim list (no second launch *in this process* can be
+/// given the same number), and a `port_is_free` re-check immediately before
+/// spawn. What is left is a genuine cross-process TOCTOU; [`BrowserProcess::launch`]
+/// therefore also retries the whole launch with a fresh port when the browser
+/// dies immediately, which is how a lost race presents.
+fn reserve_free_port() -> Option<Reservation> {
+    for _ in 0..64 {
+        let port = probe_free_port()?;
+        if let Some(reservation) = Reservation::try_claim(&RESERVED_PORTS, port) {
+            return Some(reservation);
+        }
+        // Claimed by a concurrent launch in this process; probe again.
+    }
+    None
+}
+
+/// Reserve a display number no X server is currently using.
 ///
 /// An X server on display `:N` holds `/tmp/.X11-unix/XN` and `/tmp/.X<N>-lock`.
-/// Picking at random without checking (the previous behavior) could collide
+/// Picking at random without checking (the original behavior) could collide
 /// with an existing server — including one started by another `headless-use`
 /// session — and the Xvfb spawn would fail silently.
-fn pick_free_display() -> Option<u16> {
+///
+/// Same residual race as [`reserve_free_port`], for the same reason: the files
+/// only appear once Xvfb has started, so a *different process* can still claim
+/// `:N` in between. In-process collisions are impossible thanks to the claim.
+fn reserve_free_display() -> Option<Reservation> {
     for _ in 0..64 {
         let n = fastrand::u16(20..200);
         let socket = std::path::Path::new("/tmp/.X11-unix").join(format!("X{n}"));
         let lock = std::path::PathBuf::from(format!("/tmp/.X{n}-lock"));
-        if !socket.exists() && !lock.exists() {
-            return Some(n);
+        if socket.exists() || lock.exists() {
+            continue;
+        }
+        if let Some(reservation) = Reservation::try_claim(&RESERVED_DISPLAYS, n) {
+            return Some(reservation);
         }
     }
     None
 }
 
 /// Start an Xvfb display on a free display number and return `:N`.
-async fn start_xvfb() -> Result<(String, u32), BrowserError> {
-    let n = pick_free_display()
+///
+/// The [`Reservation`] is returned with it and must be held for as long as the
+/// server runs, so no other launch in this process reuses the number.
+async fn start_xvfb() -> Result<(String, u32, Reservation), BrowserError> {
+    let reservation = reserve_free_display()
         .ok_or_else(|| BrowserError::LaunchFailed("no free X display number".into()))?;
+    let n = reservation.value;
     let display = format!(":{n}");
     let child = Command::new("Xvfb")
         .args([
@@ -500,14 +861,37 @@ async fn start_xvfb() -> Result<(String, u32), BrowserError> {
     let pid = child
         .id()
         .ok_or_else(|| BrowserError::LaunchFailed("Xvfb exited immediately".into()))?;
-    // Give Xvfb a moment to start.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Hold the child so it is reaped rather than becoming a zombie; the process
+    // itself is killed by pid during cleanup.
+    std::mem::forget(child);
+
+    // Wait for the X server to actually be listening instead of sleeping a
+    // fixed 300ms and hoping. Xvfb creates its unix socket once it is ready to
+    // accept clients, so the socket is the readiness signal. A fixed sleep is
+    // both too long on a fast machine and too short on a loaded CI runner,
+    // where Chrome then fails with an unhelpful "browser exited early".
+    let socket = std::path::Path::new("/tmp/.X11-unix").join(format!("X{n}"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if socket.exists() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
+            return Err(BrowserError::LaunchFailed(format!(
+                "Xvfb on {display} did not become ready within 10s"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     // Return the bare `:N` form. `localhost:N` makes the X client use an
     // abstract/TCP transport path that some Chrome builds reject on headless
     // servers, causing "browser exited early". The bare display number (e.g.
     // `:99`) uses the standard X11 unix socket and matches a manual
     // `DISPLAY=:99 google-chrome` invocation.
-    Ok((display, pid))
+    Ok((display, pid, reservation))
 }
 
 /// Short random id for temp dir names (no uuid dep at call site).
@@ -517,12 +901,6 @@ fn short_uuid() -> String {
 }
 
 impl LaunchOptions {
-    /// Like [`Self::to_launch_options`] in cli but kept here to avoid a cycle;
-    /// returns a default options set for doctor (root-safe).
-    pub fn to_launch_options_safe(self) -> Result<Self, BrowserError> {
-        Ok(self)
-    }
-
     /// If running as root, enable --no-sandbox automatically with a warning.
     /// This matches the documented Docker/root guidance.
     pub fn with_no_sandbox_for_root(self) -> Self {

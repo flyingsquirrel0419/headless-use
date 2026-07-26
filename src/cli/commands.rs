@@ -7,6 +7,40 @@ use crate::cli::{output, DewiggleArgs, LaunchArgs, RunArgs, ViewArgs};
 use crate::observe::parse_ref;
 use crate::session::Session;
 
+/// Best-effort explanation for a failed browser launch.
+///
+/// Chrome's own diagnostics go to a stderr we deliberately discard, so the
+/// error text a user sees is often just a signal number. These are the failure
+/// modes that actually happen on CI boxes and in containers, each with the
+/// thing to do about it.
+fn launch_failure_hint(error: &str) -> String {
+    let hint = if error.contains("SIGTRAP") || error.contains("signal: 5") {
+        Some(
+            "Chrome's crash handler could not start. This usually means $HOME is unset or \
+             not writable by this user — Chrome writes its crashpad database under it. \
+             Set HOME to a writable directory and retry.",
+        )
+    } else if error.contains("SIGSEGV") || error.contains("signal: 11") {
+        Some(
+            "Chrome crashed on startup. In containers this is usually a too-small /dev/shm \
+             (run with --shm-size=1g) or a missing shared library.",
+        )
+    } else if error.contains("No usable sandbox") || error.contains("SUID sandbox") {
+        Some(
+            "The Chrome sandbox is unavailable. Run as a non-root user, or pass --no-sandbox \
+             if the environment is already isolated.",
+        )
+    } else if error.contains("no browser found") {
+        Some("Install Chrome/Chromium, or set HEADLESS_USE_BROWSER_PATH to its path.")
+    } else {
+        None
+    };
+    match hint {
+        Some(h) => format!("\n    hint: {h}"),
+        None => String::new(),
+    }
+}
+
 /// Run the `doctor` command: diagnose the environment.
 pub async fn doctor() -> i32 {
     let mut checks: Vec<(bool, String, Option<String>)> = Vec::new();
@@ -40,7 +74,8 @@ pub async fn doctor() -> i32 {
 
     // Version + CDP round-trip (best effort).
     let mut browser_ok = false;
-    if let Ok(opts) = LaunchOptions::default().to_launch_options_safe() {
+    {
+        let opts = LaunchOptions::default();
         match Browser::launch(opts.with_no_sandbox_for_root()).await {
             Ok(b) => {
                 if let Ok(v) = b.process().version().await {
@@ -65,7 +100,11 @@ pub async fn doctor() -> i32 {
                 b.close().await;
             }
             Err(e) => {
-                checks.push((false, "Browser launch".into(), Some(e.to_string())));
+                // A bare "browser exited early" tells the operator nothing they
+                // can act on, and this is the one check most likely to fail on
+                // a fresh machine. Attach the likely cause when we can name it.
+                let detail = format!("{e}{}", launch_failure_hint(&e.to_string()));
+                checks.push((false, "Browser launch".into(), Some(detail)));
             }
         }
     }
@@ -153,7 +192,10 @@ pub async fn mcp(args: crate::cli::ServeArgs) -> i32 {
     };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await,
+        Ok(s) => match s.with_policy_async(policy).await {
+            Ok(s) => s,
+            Err(e) => return output::print_error(&e),
+        },
         Err(e) => return output::print_error(&e),
     };
     crate::mcp::transport::run(session).await
@@ -236,7 +278,10 @@ pub async fn view(args: ViewArgs) -> i32 {
     };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await.with_cursor_motion(motion),
+        Ok(s) => match s.with_policy_async(policy).await {
+            Ok(s) => s.with_cursor_motion(motion),
+            Err(e) => return output::print_error(&e),
+        },
         Err(e) => return output::print_error(&e),
     };
     // Inject the cursor overlay so the agent's mouse is visible.
@@ -256,6 +301,7 @@ pub async fn view(args: ViewArgs) -> i32 {
         args.quality.clamp(1, 100),
         max_w,
         max_h,
+        args.fps,
     )
     .await
     {
@@ -268,6 +314,10 @@ pub async fn view(args: ViewArgs) -> i32 {
     let viewer_opts = crate::viewer::ViewerOptions {
         host: args.viewer_host.clone(),
         port: args.viewer_port,
+        token: args.viewer_token.clone(),
+        // `None` = decide from the bind address: required off loopback,
+        // optional on loopback. See `ViewerOptions::require_token`.
+        require_token: None,
         ..Default::default()
     };
     let handle = match crate::viewer::http::serve(screencast.clone(), viewer_opts).await {
@@ -281,13 +331,33 @@ pub async fn view(args: ViewArgs) -> i32 {
         println!(
             "{}",
             serde_json::json!({
-                "viewer": { "url": handle.url(), "stream": handle.stream_url(), "port": handle.addr.port() }
+                "viewer": {
+                    "url": handle.url(),
+                    "stream": handle.stream_url(),
+                    "port": handle.addr.port(),
+                    "token": handle.token,
+                    "token_required": handle.token_required,
+                }
             })
         );
     } else {
-        println!("Live viewer: {}", handle.url());
-        println!("Stream:      {}", handle.stream_url());
-        println!("JSON-RPC on stdio (same as `serve`). Ctrl-C to exit.");
+        // stderr, not stdout: this process speaks JSON-RPC on stdout, so the
+        // human-facing banner has to stay off that channel. The URL carries
+        // the token so it is clickable as printed.
+        eprintln!("Live viewer: {}", handle.url());
+        eprintln!("Stream:      {}", handle.stream_url());
+        if handle.token_required {
+            eprintln!(
+                "Access:      token required (non-loopback bind). Requests without \
+                 ?token=… get 401."
+            );
+        } else {
+            eprintln!(
+                "Access:      loopback bind — the token is accepted but not required. \
+                 Bind off loopback to enforce it."
+            );
+        }
+        eprintln!("JSON-RPC on stdio (same as `serve`). Ctrl-C to exit.");
     }
     // Run the stdio JSON-RPC loop (identical to `serve`).
     let code = crate::cli::rpc::run_stdio(session).await;
@@ -314,7 +384,10 @@ pub async fn serve(args: crate::cli::ServeArgs) -> i32 {
     };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await.with_cursor_motion(motion),
+        Ok(s) => match s.with_policy_async(policy).await {
+            Ok(s) => s.with_cursor_motion(motion),
+            Err(e) => return output::print_error(&e),
+        },
         Err(e) => return output::print_error(&e),
     };
     crate::cli::rpc::run_stdio(session).await
@@ -331,7 +404,10 @@ pub async fn run(args: RunArgs) -> i32 {
     };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await,
+        Ok(s) => match s.with_policy_async(policy).await {
+            Ok(s) => s,
+            Err(e) => return output::print_error(&e),
+        },
         Err(e) => return output::print_error(&e),
     };
     let result = run_oneshot(&session, &args).await;
@@ -427,7 +503,10 @@ pub async fn dewiggle(args: DewiggleArgs) -> i32 {
     };
     let policy = crate::cli::build_policy(&args.allow_hosts, &args.deny_hosts);
     let session = match Session::start(opts).await {
-        Ok(s) => s.with_policy_async(policy).await,
+        Ok(s) => match s.with_policy_async(policy).await {
+            Ok(s) => s,
+            Err(e) => return output::print_error(&e),
+        },
         Err(e) => return output::print_error(&e),
     };
     let result = run_dewiggle(&session, &args).await;
@@ -474,7 +553,7 @@ async fn run_dewiggle(
     use base64::Engine;
     let png = base64::engine::general_purpose::STANDARD
         .decode(&out.image)
-        .map_err(|e| crate::browser::BrowserError::Other(format!("base64 decode: {e}")))?;
+        .map_err(|e| crate::browser::BrowserError::Decode(format!("dewiggle base64: {e}")))?;
     crate::util::write_bytes(std::path::Path::new(&args.out), &png)
         .map_err(crate::browser::BrowserError::Io)?;
 

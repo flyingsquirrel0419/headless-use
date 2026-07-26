@@ -18,7 +18,7 @@ Node.js 런타임 없이 단일 Rust 바이너리로 동작하며, Xvfb 없이 G
 | ------------------------------------- | ----------------------------------------- |
 | 테스트 코드 작성                     | 실시간 에이전트 조작                 |
 | CSS 셀렉터                         | 좌표 **와** 의미 참조  |
-| DOM만                              | 스크린샷 + AX/DOM + 콘솔 + 네트워크   |
+| DOM만                              | 스크린샷 + DOM + 콘솔 + 네트워크   |
 | Node.js 의존성 흔함             | 단일 Rust 바이너리                        |
 | 로컬 데스크톱 중심                 | 헤드리스 Linux, Docker, CI 우선          |
 | 결과만 제공                           | 세션 트레이스, 재현, 진단 보고서 |
@@ -93,7 +93,7 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -t headless-use .
+docker build -f docker/Dockerfile -t headless-use .
 # 이미지에 Chromium이 포함됨. 원샷 실행:
 docker run --rm --network host headless-use \
   run --url http://127.0.0.1:3000 --screenshot /output/page.png
@@ -106,8 +106,8 @@ docker run --rm --network host headless-use \
 - **실제 입력**: `Input.dispatchMouseEvent`, `dispatchKeyEvent`, `insertText`
 - **마우스**: 이동, 클릭(좌/우/중/뒤/앞), 더블/트리플, down/up, hold, hover, 휠 스크롤, 드래그(보간), drag-path
 - **키보드**: down/up/press, 조합키(`Control+Shift+P`), type, insert-text(CJK/이모지 안전), hold, repeat
-- **관찰**: 접근성/DOM 추출, 의미 `@eN` 참조, 바운딩 박스, stale 참조 감지
-- **진단**: 콘솔 + 미잡 에러, 네트워크(fetch/XHR) 비밀 마스킹, wait-until-stable
+- **관찰**: DOM 기반 상호작용 요소 추출, 의미 `@eN` 참조, 바운딩 박스, stale 참조 감지
+- **진단**: 콘솔 + 미잡 에러, 네트워크(CDP `Network.*` 이벤트 — JS 몽키패칭 아님) 비밀 마스킹, wait-until-stable
 - **스크린샷**: 뷰포트, 전체 페이지, 요소
 - **스텔스**: `--stealth`는 `--headless=new`의 가벼움을 유지하면서 헤들리스 신호를 지웁니다 — [스텔스 모드](#스텔스-모드) 참조
 - **세션**: 장기 `serve`(JSON-RPC stdio), 원샷 `run`, 트레이스 + 재현
@@ -122,7 +122,7 @@ docker run --rm --network host headless-use \
 headless-use mcp --no-sandbox
 ```
 
-서버는 18개의 `browser_*` 도구를 타입이 지정된 `inputSchema`와 함께 제공합니다. 스크린샷 결과는 MCP 이미지 블록으로, 나머지는 간결한 JSON 텍스트 블록으로 반환됩니다. 에러는 `isError: true`와 복구 힌트를 반환합니다.
+서버는 19개의 `browser_*` 도구를 타입이 지정된 `inputSchema`와 함께 제공합니다. 스크린샷 결과는 MCP 이미지 블록으로, 나머지는 간결한 JSON 텍스트 블록으로 반환됩니다. 에러는 `isError: true`와 복구 힌트를 반환합니다.
 
 ### Claude Desktop / Cursor 설정
 
@@ -146,6 +146,9 @@ headless-use
 ├── launch      브라우저를 실행하고 유지
 ├── serve        stdio 기반 장기 JSON-RPC 세션 시작
 ├── run          원샷 동작 실행 후 종료
+├── dewiggle     애니메이션 텍스트 영역을 캡처해 글자별 흔들림을 되돌림(픽셀만 사용)
+├── view         라이브 뷰어 + JSON-RPC 세션 제공
+├── replay       실행 디렉터리에 기록된 트레이스를 재실행
 ├── doctor       환경 진단
 ├── install-browser   브라우저 설치 가이드 출력
 └── mcp          stdio 기반 MCP 서버 시작
@@ -219,7 +222,7 @@ UA는 브라우저가 보고한 실제 버전에서 만들기 때문에 UA 문�
 - [행동 강령](CODE_OF_CONDUCT.md) — 커뮤니티 표준
 - [보안 정책](SECURITY.md) — 취약점 신고
 - [변경 이력](CHANGELOG.md) — 릴리스 내역
-- [디스커션](https://github.com/headless-use/headless-use/discussions) — 질문 & 아이디어
+- [디스커션](https://github.com/flyingsquirrel0419/headless-use/discussions) — 질문 & 아이디어
 
 ## 라이선스
 

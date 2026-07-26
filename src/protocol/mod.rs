@@ -87,24 +87,48 @@ impl ErrorResponse {
 /// Protocol version string.
 pub const PROTOCOL_VERSION: &str = "2.0";
 
-/// Read one JSON-RPC request line from stdin. Returns None on EOF.
-pub fn read_request<R: BufRead>(reader: &mut R) -> Option<Result<Request, serde_json::Error>> {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = match reader.read_line(&mut line) {
-            Ok(n) => n,
-            Err(_) => return None,
-        };
-        if n == 0 {
-            return None; // EOF
+/// Stream stdin lines from a dedicated OS thread.
+///
+/// ## Why a thread and not `read_line` in the async loop
+/// `stdin().lock().read_line()` blocks. Called directly from an `async fn` it
+/// parks a tokio worker thread for the entire time the client is idle — which,
+/// for a long-lived `serve` session, is nearly always. It happened to work
+/// because the multi-thread runtime had spare workers, which is luck, not
+/// design: a runtime sized to the machine can be starved by it.
+///
+/// A plain `std::thread` (not `spawn_blocking`) is used deliberately: this
+/// reader lives for the whole process, and holding a blocking-pool slot forever
+/// is the same mistake one layer down. The thread exits when stdin reaches EOF
+/// or the receiver is dropped.
+pub fn stdin_lines() -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut reader = stdin.lock();
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        return Some(serde_json::from_str(trimmed));
+    });
+    rx
+}
+
+/// Parse one JSON-RPC request from an already-read line.
+///
+/// Returns `None` for a blank line, which callers skip.
+pub fn parse_request(line: &str) -> Option<Result<Request, serde_json::Error>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    Some(serde_json::from_str(trimmed))
 }
 
 /// Write a response line to stdout.

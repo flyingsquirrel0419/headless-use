@@ -8,18 +8,26 @@ use std::time::Duration;
 use headless_use::input::{Modifiers, MouseButton, Point};
 use headless_use::session::{wait::WaitOptions, ClickTarget};
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 #[tokio::test]
 async fn p0_password_value_not_exposed_in_observe() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("password-field.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -57,7 +65,7 @@ async fn p0_wait_default_timeout_is_10_seconds() {
 
 #[tokio::test]
 async fn p0_stale_reference_detected_after_navigation() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     // Observe page A
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
@@ -98,7 +106,7 @@ async fn p0_stale_reference_detected_after_navigation() {
 
 #[tokio::test]
 async fn p0_mouse_state_persists_across_calls() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("mouse-buttons.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Move to a position, then check cursor_position
@@ -122,7 +130,7 @@ async fn p0_mouse_state_persists_across_calls() {
 
 #[tokio::test]
 async fn p0_drag_releases_at_destination() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("drag-canvas.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Drag from (50,80) to (400,280). After drag, cursor should be at destination.
@@ -143,7 +151,7 @@ async fn p0_drag_releases_at_destination() {
 
 #[tokio::test]
 async fn p0_wait_detects_ongoing_network_activity() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("slow-request.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Click the button to start a slow fetch, then immediately wait.

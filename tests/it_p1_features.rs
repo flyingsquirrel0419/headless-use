@@ -7,13 +7,21 @@ use headless_use::security::Policy;
 use headless_use::session::ClickTarget;
 use headless_use::trace::Trace;
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 /// Host allow/deny policy must block navigation to disallowed hosts before any
@@ -26,11 +34,13 @@ async fn host_policy_blocks_disallowed_navigation() {
         allow_hosts: vec!["127.0.0.1".into()],
         deny_hosts: vec![],
     };
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_policy_async(policy)
-        .await;
+        .await
+        .unwrap();
 
     // Allowed host works.
     s.open(&srv.url("basic-form.html")).await.unwrap();
@@ -56,11 +66,13 @@ async fn deny_list_takes_precedence_over_allow() {
         allow_hosts: vec!["127.0.0.1".into()],
         deny_hosts: vec!["127.0.0.1".into()],
     };
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_policy_async(policy)
-        .await;
+        .await
+        .unwrap();
     let result = s.open(&srv.url("basic-form.html")).await;
     assert!(
         matches!(
@@ -76,7 +88,7 @@ async fn deny_list_takes_precedence_over_allow() {
 /// smaller than a full-viewport screenshot.
 #[tokio::test]
 async fn element_screenshot_captures_region() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -127,7 +139,8 @@ async fn trace_saves_screenshot_and_embeds_in_report() {
         .await
         .unwrap();
     let run_dir = trace.dir().to_path_buf();
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .unwrap()
         .with_trace(trace);
@@ -168,7 +181,7 @@ async fn trace_saves_screenshot_and_embeds_in_report() {
 /// requested (the --screenshot flag), and that trace screenshots work alongside.
 #[tokio::test]
 async fn rpc_screenshot_with_element_works() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();

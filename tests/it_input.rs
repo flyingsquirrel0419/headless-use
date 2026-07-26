@@ -11,13 +11,21 @@ use std::time::Duration;
 use headless_use::input::{Modifiers, MouseButton, Point};
 use headless_use::session::ClickTarget;
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 async fn log_text(s: &headless_use::session::Session) -> String {
@@ -33,7 +41,7 @@ async fn log_text(s: &headless_use::session::Session) -> String {
 
 #[tokio::test]
 async fn vertical_scroll_inner_container() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("scroll-container.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Box is 300px tall; scroll at vertical center of the box.
@@ -54,7 +62,7 @@ async fn vertical_scroll_inner_container() {
 
 #[tokio::test]
 async fn horizontal_scroll() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("horizontal-scroll.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // The horizontal scroll container is near the top; wheel at y~60.
@@ -75,7 +83,7 @@ async fn horizontal_scroll() {
 
 #[tokio::test]
 async fn slider_drag_changes_value() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("slider.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Measure the slider's actual bounds via JS to get accurate coordinates.
@@ -110,7 +118,7 @@ async fn slider_drag_changes_value() {
 
 #[tokio::test]
 async fn canvas_drag_draws_points() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("drag-canvas.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Canvas at default position; drag across it.
@@ -137,7 +145,7 @@ async fn canvas_drag_draws_points() {
 
 #[tokio::test]
 async fn keyboard_shortcut_and_text() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("keyboard-events.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -174,9 +182,127 @@ async fn keyboard_shortcut_and_text() {
     s.shutdown().await;
 }
 
+/// Open `keyboard-events.html` and focus its input with a real click, so every
+/// key event below is observed by the page's keydown/input listeners.
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn keyboard_fixture() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
+    let (profile, s, srv) = session().await;
+    s.open(&srv.url("keyboard-events.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    let inp = obs
+        .elements
+        .iter()
+        .find(|e| e.role == "textbox")
+        .map(|e| e.ref_id)
+        .expect("input not found");
+    s.click(
+        ClickTarget::Ref {
+            id: inp,
+            generation: None,
+        },
+        MouseButton::Left,
+        1,
+        Modifiers::NONE,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    (profile, s, srv)
+}
+
+/// Uppercase letters are the lowercase physical key held with Shift: the page
+/// must see `shiftKey === true` and the `KeyA` physical code.
+#[tokio::test]
+async fn uppercase_letter_reports_shift_and_physical_code() {
+    let (_profile, s, _srv) = keyboard_fixture().await;
+    s.type_text("A", Duration::ZERO, false).await.unwrap();
+    let log = log_text(&s).await;
+    assert!(
+        log.contains("keydown key=A code=KeyA ctrl=false shift=true"),
+        "expected uppercase A keydown with code=KeyA and shift=true: {log}"
+    );
+    s.shutdown().await;
+}
+
+/// Shifted symbols keep the physical key that produces them on US QWERTY
+/// (`?` lives on `Slash`) instead of degrading to `Unidentified`.
+#[tokio::test]
+async fn shifted_symbol_reports_base_code_and_shift() {
+    let (_profile, s, _srv) = keyboard_fixture().await;
+    s.type_text("?", Duration::ZERO, false).await.unwrap();
+    let log = log_text(&s).await;
+    assert!(
+        log.contains("code=Slash"),
+        "expected '?' to report code=Slash: {log}"
+    );
+    assert!(
+        log.contains("keydown key=? code=Slash ctrl=false shift=true"),
+        "expected '?' keydown with shift=true: {log}"
+    );
+    assert!(
+        !log.contains("Unidentified"),
+        "no key should report Unidentified: {log}"
+    );
+    s.shutdown().await;
+}
+
+/// Regression pin: lowercase must not acquire a phantom Shift.
+#[tokio::test]
+async fn lowercase_letter_reports_no_shift() {
+    let (_profile, s, _srv) = keyboard_fixture().await;
+    s.type_text("a", Duration::ZERO, false).await.unwrap();
+    let log = log_text(&s).await;
+    assert!(
+        log.contains("keydown key=a code=KeyA ctrl=false shift=false"),
+        "expected lowercase a keydown with shift=false: {log}"
+    );
+    s.shutdown().await;
+}
+
+/// The modifier work must not disturb the `text` path: a mixed string with
+/// uppercase, punctuation and a shifted symbol still round-trips verbatim.
+#[tokio::test]
+async fn mixed_case_string_round_trips_into_value() {
+    let (_profile, s, _srv) = keyboard_fixture().await;
+    let text = "Hello, World!";
+    s.type_text(text, Duration::ZERO, false).await.unwrap();
+    let value = s
+        .page()
+        .evaluate("document.getElementById('i').value")
+        .await
+        .unwrap()
+        .value()
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_default();
+    assert_eq!(value, text, "typed value mismatch");
+    // And the shifted characters in it announced their physical keys.
+    let log = log_text(&s).await;
+    assert!(
+        log.contains("key=H code=KeyH ctrl=false shift=true"),
+        "expected shifted H: {log}"
+    );
+    assert!(
+        log.contains("key=! code=Digit1 ctrl=false shift=true"),
+        "expected '!' on Digit1 with shift: {log}"
+    );
+    assert!(
+        log.contains("key=, code=Comma ctrl=false shift=false"),
+        "expected unshifted comma: {log}"
+    );
+    s.shutdown().await;
+}
+
 #[tokio::test]
 async fn korean_emoji_insert_text() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("ime-input.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -207,7 +333,7 @@ async fn korean_emoji_insert_text() {
 
 #[tokio::test]
 async fn html5_dnd_moves_card() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("html5-dnd.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Drag card c1 to done column. Measure both columns.

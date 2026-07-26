@@ -14,14 +14,20 @@ use std::time::Duration;
 use headless_use::input::{CursorMotion, Modifiers, MouseButton};
 use headless_use::session::{ClickTarget, Session};
 
-async fn session_with(motion: CursorMotion) -> (Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session_with(
+    motion: CursorMotion,
+) -> (common::TempProfile, Session, common::FixtureServer) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = Session::start(profile.launch_opts())
         .await
         .unwrap()
         .with_cursor_motion(motion);
-    (s, srv)
+    (profile, s, srv)
 }
 
 async fn move_count(s: &Session) -> f64 {
@@ -38,7 +44,7 @@ async fn move_count(s: &Session) -> f64 {
 /// click, and no intermediate positions.
 #[tokio::test]
 async fn instant_motion_emits_a_single_move() {
-    let (s, srv) = session_with(CursorMotion::Instant).await;
+    let (_profile, s, srv) = session_with(CursorMotion::Instant).await;
     s.open(&srv.url("mousemove-counter.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     s.page().evaluate("window.__resetMoves()").await.unwrap();
@@ -66,7 +72,7 @@ async fn instant_motion_emits_a_single_move() {
 /// the viewer renders as travel.
 #[tokio::test]
 async fn smooth_motion_emits_intermediate_moves() {
-    let (s, srv) = session_with(CursorMotion::smooth_default()).await;
+    let (_profile, s, srv) = session_with(CursorMotion::smooth_default()).await;
     s.open(&srv.url("mousemove-counter.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
 
@@ -108,7 +114,7 @@ async fn smooth_motion_emits_intermediate_moves() {
 /// had just been walked to, adding a phantom event to the stream.
 #[tokio::test]
 async fn smooth_click_does_not_double_move_at_the_target() {
-    let (s, srv) = session_with(CursorMotion::smooth_default()).await;
+    let (_profile, s, srv) = session_with(CursorMotion::smooth_default()).await;
     s.open(&srv.url("mousemove-counter.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     s.hover(ClickTarget::Point((600.0, 450.0).into()))
@@ -136,7 +142,7 @@ async fn smooth_click_does_not_double_move_at_the_target() {
 /// The injected overlay is the solid pointer, not the previous neon arrow.
 #[tokio::test]
 async fn overlay_is_the_solid_pointer() {
-    let (s, srv) = session_with(CursorMotion::Instant).await;
+    let (_profile, s, srv) = session_with(CursorMotion::Instant).await;
     s.page().inject_cursor_overlay().await.unwrap();
     s.open(&srv.url("mousemove-counter.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();

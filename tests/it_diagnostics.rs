@@ -7,18 +7,26 @@ use std::time::Duration;
 use headless_use::input::{Modifiers, MouseButton, Point};
 use headless_use::session::{ClickTarget, ConsoleLevel};
 
-async fn session() -> (headless_use::session::Session, common::FixtureServer) {
+/// The [`common::TempProfile`] comes first in the tuple on purpose: bindings
+/// drop in reverse declaration order, so a first-position guard is destroyed
+/// last — after the session, even if a test panics before its `shutdown()`.
+async fn session() -> (
+    common::TempProfile,
+    headless_use::session::Session,
+    common::FixtureServer,
+) {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(profile.launch_opts())
         .await
         .expect("session start");
-    (s, srv)
+    (profile, s, srv)
 }
 
 #[tokio::test]
 async fn console_collects_errors_and_warns() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("console-errors.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // The page calls nonexistent.function.call() on load -> error.
@@ -60,7 +68,7 @@ async fn console_collects_errors_and_warns() {
 
 #[tokio::test]
 async fn network_collects_failed_and_500() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("network-errors.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -96,7 +104,7 @@ async fn network_collects_failed_and_500() {
 
 #[tokio::test]
 async fn wait_returns_stable() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     let r = s
         .wait(headless_use::session::wait::WaitOptions {
@@ -111,7 +119,7 @@ async fn wait_returns_stable() {
 
 #[tokio::test]
 async fn stale_reference_detected_after_dom_change() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("dynamic-dom.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Observe initially; the "add" button exists but item buttons don't yet.
@@ -159,7 +167,7 @@ async fn stale_reference_detected_after_dom_change() {
 
 #[tokio::test]
 async fn overlay_blocks_click_then_close_works() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("overlay-blocking.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     let obs = s.observe().await.unwrap();
@@ -199,7 +207,7 @@ async fn overlay_blocks_click_then_close_works() {
 
 #[tokio::test]
 async fn point_click_outside_element_does_nothing_harmful() {
-    let (s, srv) = session().await;
+    let (_profile, s, srv) = session().await;
     s.open(&srv.url("basic-form.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
     // Click empty space; should not error.

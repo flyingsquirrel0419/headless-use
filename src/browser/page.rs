@@ -32,7 +32,10 @@ impl Page {
         let target_id = result
             .get("targetId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| BrowserError::Other("Target.createTarget returned no targetId".into()))?
+            .ok_or_else(|| BrowserError::UnexpectedResponse {
+                method: "Target.createTarget".into(),
+                detail: "no targetId".into(),
+            })?
             .to_string();
 
         // Attach to get a session id.
@@ -48,8 +51,9 @@ impl Page {
         let session_id = attach
             .get("sessionId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                BrowserError::Other("Target.attachToTarget returned no sessionId".into())
+            .ok_or_else(|| BrowserError::UnexpectedResponse {
+                method: "Target.attachToTarget".into(),
+                detail: "no sessionId".into(),
             })?
             .to_string();
 
@@ -141,18 +145,20 @@ impl Page {
             .await?;
         // Check for CDP-level navigation error.
         if let Some(error_text) = result.get("errorText").and_then(|v| v.as_str()) {
-            return Err(BrowserError::Other(format!(
-                "navigation to '{url}' failed: {error_text}"
-            )));
+            return Err(BrowserError::Navigation {
+                url: url.to_string(),
+                reason: error_text.to_string(),
+            });
         }
         self.wait_load(Duration::from_secs(30)).await?;
         // Detect Chrome error pages — these load 'successfully' (readyState=complete)
         // but indicate a real failure (DNS error, blocked, etc.).
         let final_url = self.url().await.unwrap_or_default();
         if final_url.starts_with("chrome-error://") {
-            return Err(BrowserError::Other(format!(
-                "navigation to '{url}' resulted in a Chrome error page ({final_url})"
-            )));
+            return Err(BrowserError::Navigation {
+                url: url.to_string(),
+                reason: format!("Chrome error page ({final_url})"),
+            });
         }
         Ok(())
     }
@@ -170,7 +176,7 @@ impl Page {
         // the caller would observe the pre-reload page. The marker does not
         // survive the document swap, so its absence proves the new document is
         // in place.
-        let _ = self.evaluate("window.__hu_reload_marker__ = 1").await;
+        let _ = self.evaluate_sync("window.__hu_reload_marker__ = 1").await;
         self.call::<Value>(
             "Page.reload",
             Some(json!({ "ignoreCache": false })),
@@ -182,9 +188,10 @@ impl Page {
         self.wait_load(Duration::from_secs(30)).await?;
         let final_url = self.url().await.unwrap_or_default();
         if final_url.starts_with("chrome-error://") {
-            return Err(BrowserError::Other(format!(
-                "reload resulted in a Chrome error page ({final_url})"
-            )));
+            return Err(BrowserError::Navigation {
+                url: final_url.clone(),
+                reason: "reload landed on a Chrome error page".into(),
+            });
         }
         Ok(())
     }
@@ -200,7 +207,7 @@ impl Page {
         let expr = format!("!!window.{marker}");
         loop {
             let still_there = self
-                .evaluate(&expr)
+                .evaluate_sync(&expr)
                 .await
                 .ok()
                 .and_then(|r| r.value().and_then(|v| v.as_bool()))
@@ -218,29 +225,74 @@ impl Page {
         }
     }
 
-    /// Wait for `Page.loadEventFired` (or timeout).
+    /// Wait for the page load to complete, or time out.
+    ///
+    /// Waits on `Page.loadEventFired` for this page's session, with a
+    /// `document.readyState` poll as a backstop.
+    ///
+    /// ## Why both
+    /// The event alone is not enough: it may have fired before we subscribed
+    /// (a fast document), and it is only delivered if the `Page` domain is
+    /// enabled, which a bare `Page` used outside a `Session` cannot assume.
+    /// The poll alone is not enough either — it adds up to a poll interval of
+    /// latency to every navigation. Racing them costs nothing and is correct in
+    /// both directions.
+    ///
+    /// The poll uses [`Self::evaluate_sync`]. The earlier version used
+    /// `evaluate`, i.e. `awaitPromise: true`, which is the documented hang class
+    /// on any page running a perpetual `requestAnimationFrame` loop: waiting for
+    /// load would itself hang until the 30s call timeout.
     pub async fn wait_load(&self, timeout: Duration) -> Result<(), BrowserError> {
-        // Poll document.readyState via Runtime.evaluate as a robust fallback.
+        // Subscribe before the first readyState check so a load event that
+        // fires between the check and the wait is not missed.
+        let mut events = self.client.subscribe_events_async().await;
         let deadline = std::time::Instant::now() + timeout;
+
         loop {
-            let ready = self
-                .evaluate("document.readyState")
-                .await?
-                .value()
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_default();
-            if ready == "complete" {
+            if self.ready_state_is_complete().await? {
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
                 return Err(BrowserError::Timeout {
                     operation: "Page.wait_load".into(),
                     timeout_ms: timeout.as_millis() as u64,
                 });
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            let poll_in = remaining.min(Duration::from_millis(50));
+            tokio::select! {
+                maybe_event = events.recv() => {
+                    match maybe_event {
+                        Some(ev) => {
+                            if ev.method == "Page.loadEventFired"
+                                && ev.session_id.as_deref() == Some(self.session_id.as_str())
+                            {
+                                return Ok(());
+                            }
+                        }
+                        // Event bus gone: the connection is closing. Fall back to
+                        // polling until the deadline rather than spinning on a
+                        // closed channel.
+                        None => {
+                            tokio::time::sleep(poll_in).await;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(poll_in) => {}
+            }
         }
+    }
+
+    /// True when `document.readyState === "complete"`.
+    async fn ready_state_is_complete(&self) -> Result<bool, BrowserError> {
+        let ready = self
+            .evaluate_sync("document.readyState")
+            .await?
+            .value()
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+        Ok(ready == "complete")
     }
 
     /// Evaluate a JS expression in the page and return the typed result.
@@ -260,8 +312,8 @@ impl Page {
         .await
         .and_then(|r| {
             if r.exception_details.is_some() {
-                Err(BrowserError::Other(format!(
-                    "Runtime.evaluate threw: {:?}",
+                Err(BrowserError::Evaluation(format!(
+                    "{:?}",
                     r.exception_details
                 )))
             } else {
@@ -292,8 +344,8 @@ impl Page {
         .await
         .and_then(|r| {
             if r.exception_details.is_some() {
-                Err(BrowserError::Other(format!(
-                    "Runtime.evaluate threw: {:?}",
+                Err(BrowserError::Evaluation(format!(
+                    "{:?}",
                     r.exception_details
                 )))
             } else {
@@ -303,13 +355,66 @@ impl Page {
     }
 
     /// Find the first element matching a CSS selector and return its viewport
-    /// bounding box (x, y, width, height) using the DOM domain (no JS
-    /// evaluation). Safe on pages with a perpetual rAF loop where
-    /// `Runtime.evaluate` can hang in headless mode.
+    /// bounding box (x, y, width, height).
+    ///
+    /// Tries the DOM domain first, then falls back to a synchronous
+    /// `getBoundingClientRect` evaluation.
+    ///
+    /// ## Why both
+    /// The DOM path was introduced because `Runtime.evaluate` with
+    /// `awaitPromise: true` hangs on a page running a perpetual
+    /// `requestAnimationFrame` loop. But the DOM agent is not immune either:
+    /// on the same animated pages `DOM.getDocument` can exceed its timeout when
+    /// the main thread is saturated, which is how the only end-to-end
+    /// `dewiggle` test ended up permanently `#[ignore]`d. Now that
+    /// [`Self::evaluate_sync`] exists — no `awaitPromise`, so no microtask
+    /// wait — the fallback does not reintroduce the original hang.
     pub async fn element_box_by_selector(
         &self,
         selector: &str,
     ) -> Result<Option<(f64, f64, f64, f64)>, BrowserError> {
+        match self.element_box_via_dom(selector).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                tracing::debug!(error = %e, selector, "DOM box lookup failed; using JS fallback");
+                self.element_box_via_js(selector).await
+            }
+        }
+    }
+
+    /// `getBoundingClientRect` fallback for [`Self::element_box_by_selector`].
+    async fn element_box_via_js(
+        &self,
+        selector: &str,
+    ) -> Result<Option<(f64, f64, f64, f64)>, BrowserError> {
+        let sel = serde_json::to_string(selector).unwrap_or_else(|_| "\"*\"".into());
+        let expr = format!(
+            "(()=>{{const e=document.querySelector({sel});if(!e)return null;const r=e.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
+        );
+        let Some(s) = self
+            .evaluate_sync(&expr)
+            .await?
+            .value()
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        else {
+            return Ok(None);
+        };
+        if s == "null" || s.is_empty() {
+            return Ok(None);
+        }
+        let v: Value = serde_json::from_str(&s)
+            .map_err(|e| BrowserError::Decode(format!("element box: {e}")))?;
+        let get = |k: &str| v.get(k).and_then(|n| n.as_f64()).unwrap_or(0.0);
+        Ok(Some((get("x"), get("y"), get("w"), get("h"))))
+    }
+
+    async fn element_box_via_dom(
+        &self,
+        selector: &str,
+    ) -> Result<Option<(f64, f64, f64, f64)>, BrowserError> {
+        // The DOM agent answers `getDocument` reliably only once enabled.
+        self.enable("DOM.enable", None).await?;
         let doc: Value = self
             .call::<Value>(
                 "DOM.getDocument",
@@ -321,7 +426,10 @@ impl Page {
             .get("root")
             .and_then(|r| r.get("nodeId"))
             .and_then(|n| n.as_i64())
-            .ok_or_else(|| BrowserError::Other("DOM.getDocument: no root nodeId".into()))?;
+            .ok_or_else(|| BrowserError::UnexpectedResponse {
+                method: "DOM.getDocument".into(),
+                detail: "no root nodeId".into(),
+            })?;
         let q: Value = self
             .call::<Value>(
                 "DOM.querySelector",
@@ -407,18 +515,20 @@ impl Page {
                 Duration::from_secs(30),
             )
             .await?;
-        let data = result
-            .get("data")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| BrowserError::Other("no screenshot data".into()))?;
+        let data = result.get("data").and_then(|v| v.as_str()).ok_or_else(|| {
+            BrowserError::UnexpectedResponse {
+                method: "Page.captureScreenshot".into(),
+                detail: "no data field".into(),
+            }
+        })?;
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
-            .map_err(|e| BrowserError::Other(format!("base64 decode: {e}")))
+            .map_err(|e| BrowserError::Decode(format!("screenshot base64: {e}")))
     }
 
     /// Current URL via JS.
     pub async fn url(&self) -> Result<String, BrowserError> {
         Ok(self
-            .evaluate("location.href")
+            .evaluate_sync("location.href")
             .await?
             .value()
             .and_then(|v| v.as_str())
@@ -429,7 +539,7 @@ impl Page {
     /// Page title via JS.
     pub async fn title(&self) -> Result<String, BrowserError> {
         Ok(self
-            .evaluate("document.title")
+            .evaluate_sync("document.title")
             .await?
             .value()
             .and_then(|v| v.as_str())
@@ -440,14 +550,14 @@ impl Page {
     /// Scroll position (scrollX, scrollY) via JS.
     pub async fn scroll_position(&self) -> Result<(i64, i64), BrowserError> {
         let v = self
-            .evaluate("JSON.stringify({x: window.scrollX, y: window.scrollY})")
+            .evaluate_sync("JSON.stringify({x: window.scrollX, y: window.scrollY})")
             .await?
             .value()
             .and_then(|v| v.as_str())
             .map(String::from)
             .unwrap_or_else(|| "{}".into());
         let obj: Value = serde_json::from_str(&v)
-            .map_err(|e| BrowserError::Other(format!("scroll parse: {e}")))?;
+            .map_err(|e| BrowserError::Decode(format!("scroll position: {e}")))?;
         Ok((
             obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0),
             obj.get("y").and_then(|y| y.as_i64()).unwrap_or(0),
@@ -504,7 +614,7 @@ impl Page {
         let expr = format!(
             "(function(){{try{{var s=document.createElement('script');s.textContent=atob('{b64}');document.documentElement.appendChild(s);}}catch(e){{}}}})();"
         );
-        let _ = self.evaluate(&expr).await;
+        let _ = self.evaluate_sync(&expr).await;
         Ok(())
     }
 }

@@ -12,7 +12,8 @@ use headless_use::session::ClickTarget;
 async fn observe_output_includes_canonical_ref_token() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .expect("session start");
     s.open(&srv.url("basic-form.html")).await.unwrap();
@@ -42,7 +43,8 @@ async fn observe_output_includes_canonical_ref_token() {
 async fn button_click_navigation_invalidates_references() {
     common::init();
     let srv = common::FixtureServer::start().await;
-    let s = headless_use::session::Session::start(common::test_launch())
+    let _s_profile = common::TempProfile::new();
+    let s = headless_use::session::Session::start(_s_profile.launch_opts())
         .await
         .expect("session start");
     // click-nav.html: clicking the button does a real document navigation

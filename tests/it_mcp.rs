@@ -60,8 +60,10 @@ fn recv(reader: &mut impl BufRead, timeout: Duration) -> Option<Value> {
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_handshake_and_tools_list() {
     common::init();
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["mcp", "--no-sandbox"])
+        .args(["mcp", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -110,17 +112,17 @@ async fn mcp_handshake_and_tools_list() {
     send(&mut stdin, "browser.close", json!({}), Some(99));
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    std::thread::sleep(Duration::from_millis(300));
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_full_browser_flow() {
     common::init();
     let srv = common::FixtureServer::start().await;
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["mcp", "--no-sandbox"])
+        .args(["mcp", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -212,16 +214,16 @@ async fn mcp_full_browser_flow() {
     send(&mut stdin, "browser.close", json!({}), Some(99));
     let _ = recv(&mut stdout, to);
     drop(stdin);
-    std::thread::sleep(Duration::from_millis(300));
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_error_before_initialize_rejected() {
     common::init();
+    let profile = common::TempProfile::new();
     let mut child = Command::new(binary())
-        .args(["mcp", "--no-sandbox"])
+        .args(["mcp", "--no-sandbox", "--user-data-dir"])
+        .arg(profile.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -239,6 +241,5 @@ async fn mcp_error_before_initialize_rejected() {
     assert_eq!(r["error"]["code"], json!(-32002));
 
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    common::shutdown_child(child);
 }

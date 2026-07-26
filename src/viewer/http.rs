@@ -17,8 +17,10 @@
 //!   `--viewer-host` can widen it (added for remote viewing over a trusted
 //!   network), and that is a deliberate exposure decision by the operator:
 //!   **the stream carries whatever the agent-controlled page is showing —
-//!   including logged-in session content — and there is no authentication on
-//!   it.** [`serve`] logs a warning whenever the bind address is not loopback.
+//!   including logged-in session content.** Access is gated by a bearer token
+//!   in the URL (see [`ViewerOptions::require_token`]); [`serve`] still logs a
+//!   warning whenever the bind address is not loopback, because a token does
+//!   not make cleartext HTTP on a shared network a good idea.
 //!   This is separate from the CDP endpoint, which is always 127.0.0.1-only.
 
 use std::net::SocketAddr;
@@ -41,6 +43,37 @@ pub struct ViewerOptions {
     pub port: u16,
     /// Max time to wait for the first frame on a stream connection.
     pub first_frame_timeout: Duration,
+    /// Bearer token accepted as the `token` query parameter on every viewer
+    /// endpoint. `None` means "generate a random one at startup"; pin it with
+    /// `--viewer-token` when the URL has to be stable (a bookmark, a tunnel
+    /// config, a script).
+    ///
+    /// A query parameter rather than a header because the primary UX is a
+    /// human pasting the printed URL into a browser, and a browser cannot be
+    /// told to attach an `Authorization` header to a top-level navigation or
+    /// to an `<img>` load.
+    pub token: Option<String>,
+    /// Whether a valid token is *required*.
+    ///
+    /// `None` (the default) derives it from the bind address, which is the
+    /// only split that is both safe and not annoying:
+    ///
+    /// - **Non-loopback bind** (`--viewer-host 0.0.0.0`, a LAN address, …):
+    ///   **required**. Every request without a matching `?token=` is answered
+    ///   `401`. This is the case that is actually reachable by other machines,
+    ///   so leaving it open is a real hole rather than a theoretical one.
+    /// - **Loopback bind** (`127.0.0.1`, `::1`, `127.0.0.2`, …): **optional**.
+    ///   A token is still generated, still printed, and still accepted, but a
+    ///   request that omits it is served normally. Anything that can reach a
+    ///   loopback socket is already running as (or under) this user and can
+    ///   read the token out of the process' own argv or output anyway, so
+    ///   rejecting would break the common `headless-use view` + click-the-link
+    ///   flow for no gain.
+    ///
+    /// `Some(true)` / `Some(false)` pin the behaviour regardless of address.
+    /// Tests use `Some(true)` to exercise the rejection path without having to
+    /// bind a routable interface.
+    pub require_token: Option<bool>,
 }
 
 impl Default for ViewerOptions {
@@ -49,36 +82,116 @@ impl Default for ViewerOptions {
             host: "127.0.0.1".to_string(),
             port: 7780,
             first_frame_timeout: Duration::from_secs(10),
+            token: None,
+            require_token: None,
         }
     }
 }
 
-/// Handle to a running viewer server. Drop to stop (best-effort).
+/// A fresh 128-bit token, hex-encoded.
+///
+/// Local helper on purpose: `browser::launch::short_uuid` is the same idea for
+/// temp directory names, but that one is 64 bits — fine for uniqueness, not for
+/// something an attacker may guess. This is not a CSPRNG (`fastrand` is a PRNG),
+/// which is worth knowing about: the token raises the bar on a LAN-exposed
+/// viewer, it is not a secret worth defending against an offline attacker.
+fn generate_token() -> String {
+    let bytes: [u8; 16] = std::array::from_fn(|_| fastrand::u8(0..=255));
+    hex::encode(bytes)
+}
+
+/// Compare two byte strings without an early return on the first difference.
+///
+/// Lengths are compared up front — that does leak the token length, which is
+/// public information (it is printed in the URL) and not worth the complexity
+/// of a length-blinded compare.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Extract `key` from the query string of a request target such as
+/// `/stream?token=abc&x=1`. Returns the raw (still percent-encoded) value.
+fn query_param<'a>(target: &'a str, key: &str) -> Option<&'a str> {
+    let (_, query) = target.split_once('?')?;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then_some(v)
+    })
+}
+
+/// Maximum number of connections served at once.
+///
+/// Each connection is one MJPEG stream that holds a clone of the latest JPEG
+/// frame while writing it, so connections cost memory and a file descriptor
+/// each and never finish on their own — an MJPEG response is unbounded by
+/// design. The viewer's job is a handful of browser tabs watching one page;
+/// 32 leaves generous room for reload churn (a refreshed tab's old connection
+/// lingers until the write fails) while putting a hard ceiling on what a
+/// non-loopback bind (`--viewer-host 0.0.0.0`) can consume. The cap is checked
+/// before the token is, so unauthorized traffic cannot exhaust the pool either.
+/// Beyond it we answer 503 and close instead of spawning without limit.
+const MAX_CONNECTIONS: usize = 32;
+
+/// Handle to a running viewer server. Drop to stop.
+///
+/// Dropping stops the accept loop *and* tears down connections that are already
+/// streaming: every connection task selects on the same shutdown signal, so a
+/// dropped handle ends the live `/stream` responses instead of leaving their
+/// heartbeat loops running until each client happens to disconnect.
 pub struct ViewerHandle {
     /// The bound localhost address.
     pub addr: SocketAddr,
-    /// Shut the server down cleanly. Consumed on drop.
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    /// The token this server accepts. Always present, even when
+    /// [`ViewerHandle::token_required`] is false, so the printed URL is
+    /// identical in both modes and keeps working if the bind is widened later.
+    pub token: String,
+    /// Whether requests without a matching token are rejected with `401`.
+    pub token_required: bool,
+    /// Broadcasts the shutdown flag to the accept loop and every live
+    /// connection. Set to `true` on drop; dropping the sender is itself a
+    /// shutdown signal, so a leaked handle still cannot outlive the process.
+    shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 impl Drop for ViewerHandle {
     fn drop(&mut self) {
-        // Best-effort: signal the accept loop to exit. If the receiver is
-        // already gone this is a no-op.
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
+        // Best-effort: signal the accept loop and all live connections to exit.
+        // If every receiver is already gone this is a no-op.
+        let _ = self.shutdown.send(true);
+    }
+}
+
+/// Resolve once the shutdown flag is set or the sender is dropped.
+async fn shutdown_signalled(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *rx.borrow_and_update() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            return; // handle dropped without sending: also a shutdown
         }
     }
 }
 
 impl ViewerHandle {
-    /// The localhost URL of the viewer index page.
+    /// The viewer index URL, token included.
+    ///
+    /// The token is always in the URL, not only when it is enforced: this is
+    /// the string an operator copies, and it must keep working if they later
+    /// re-run with `--viewer-host 0.0.0.0`.
     pub fn url(&self) -> String {
-        format!("http://{}/", self.addr)
+        format!("http://{}/?token={}", self.addr, self.token)
     }
-    /// The MJPEG stream URL.
+    /// The MJPEG stream URL, token included.
     pub fn stream_url(&self) -> String {
-        format!("http://{}/stream", self.addr)
+        format!("http://{}/stream?token={}", self.addr, self.token)
     }
 }
 
@@ -104,35 +217,83 @@ pub async fn serve(
         })?;
     let listener = TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
+
+    let token = opts.token.clone().unwrap_or_else(generate_token);
+    // See `ViewerOptions::require_token`: enforced off loopback, accepted but
+    // not demanded on loopback, and pinnable either way.
+    let token_required = opts.require_token.unwrap_or(!bound_addr.ip().is_loopback());
+
     if !bound_addr.ip().is_loopback() {
         tracing::warn!(
             addr = %bound_addr,
-            "viewer is bound to a non-loopback address; the page stream is unauthenticated and \
-             anyone who can reach this address can watch the agent-controlled browser"
+            "viewer is bound to a non-loopback address; access requires the viewer token, but the \
+             stream itself is unencrypted HTTP and anyone holding the URL can watch the \
+             agent-controlled browser"
         );
         eprintln!(
-            "warning: viewer bound to {bound_addr} (not loopback). The stream is unauthenticated — \
-             anyone who can reach this address can watch the agent-controlled page."
+            "warning: viewer bound to {bound_addr} (not loopback). Access requires the token in \
+             the URL, but the stream is plain HTTP — anyone who obtains that URL, or who can \
+             observe the traffic, can watch the agent-controlled page."
         );
     }
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let first_frame_timeout = opts.first_frame_timeout;
+    let auth = Arc::new(Auth {
+        token: token.clone(),
+        required: token_required,
+    });
+    // Permits are handed to connection tasks and released when they end, so
+    // this counts *live* connections rather than total accepts.
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 biased;
-                _ = &mut shutdown_rx => break,
+                _ = shutdown_signalled(&mut shutdown_rx) => break,
                 accept = listener.accept() => {
-                    let (mut stream, _peer) = match accept {
+                    let (mut stream, peer) = match accept {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
+                    let permit = match Arc::clone(&slots).try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            tracing::warn!(
+                                %peer,
+                                max = MAX_CONNECTIONS,
+                                "viewer connection limit reached; rejecting"
+                            );
+                            // Answer inline rather than spawning: spawning per
+                            // rejection is the very unboundedness we are
+                            // capping. The write is one small buffer and is
+                            // time-bounded, so a stuck peer cannot wedge the
+                            // accept loop; at worst it slows accepts while we
+                            // are already at capacity, which is the backpressure
+                            // we want.
+                            let _ = tokio::time::timeout(
+                                REJECT_WRITE_TIMEOUT,
+                                write_text(&mut stream, 503, "too many connections"),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
                     let sc = screencast.clone();
                     let to = first_frame_timeout;
+                    let auth = auth.clone();
+                    let mut conn_shutdown = shutdown_rx.clone();
                     tokio::spawn(async move {
-                        let _ = handle_connection(&mut stream, &sc, to).await;
+                        // Shutdown cancels the connection future wherever it is
+                        // parked — including the /stream heartbeat loop, which
+                        // would otherwise keep re-sending frames until the
+                        // client went away on its own.
+                        tokio::select! {
+                            r = handle_connection(&mut stream, &sc, to, &auth) => { let _ = r; }
+                            _ = shutdown_signalled(&mut conn_shutdown) => {}
+                        }
+                        drop(permit);
                     });
                 }
             }
@@ -141,14 +302,37 @@ pub async fn serve(
 
     Ok(ViewerHandle {
         addr: bound_addr,
-        shutdown: Some(shutdown_tx),
+        token,
+        token_required,
+        shutdown: shutdown_tx,
     })
 }
+
+/// The token and whether it is enforced, shared by every connection task.
+struct Auth {
+    token: String,
+    required: bool,
+}
+
+impl Auth {
+    /// Whether a request target (`/stream?token=…`) may be served.
+    fn permits(&self, target: &str) -> bool {
+        if !self.required {
+            return true;
+        }
+        query_param(target, "token")
+            .is_some_and(|t| constant_time_eq(t.as_bytes(), self.token.as_bytes()))
+    }
+}
+
+/// How long we are willing to spend telling a peer it was rejected.
+const REJECT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn handle_connection(
     stream: &mut tokio::net::TcpStream,
     screencast: &Arc<Screencast>,
     first_frame_timeout: Duration,
+    auth: &Auth,
 ) -> std::io::Result<()> {
     // Read until we have the full request line. A single `read` can return a
     // partial line (the request may be split across TCP segments), which would
@@ -156,14 +340,22 @@ async fn handle_connection(
     let Some(request_line) = read_request_line(stream).await else {
         return write_text(stream, 400, "bad request").await;
     };
-    let path = request_line
+    let target = request_line
         .split_whitespace()
         .nth(1)
         .unwrap_or("/")
         .to_string();
+    let path = target.split('?').next().unwrap_or("/");
 
-    match path.as_str() {
-        "/" | "/index.html" => write_index(stream).await,
+    // `/health` is deliberately outside the gate: it answers a fixed `ok` and
+    // discloses nothing about the page, so a container/uptime probe should not
+    // need the secret. Everything that can reveal page content is gated.
+    if path != "/health" && !auth.permits(&target) {
+        return write_text(stream, 401, "unauthorized: append ?token=<viewer token>").await;
+    }
+
+    match path {
+        "/" | "/index.html" => write_index(stream, auth).await,
         "/stream" | "/mjpeg" => write_stream(stream, screencast, first_frame_timeout).await,
         "/health" => write_text(stream, 200, "ok").await,
         _ => write_text(stream, 404, "not found").await,
@@ -193,8 +385,16 @@ async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Option<String>
     }
 }
 
-async fn write_index(stream: &mut tokio::net::TcpStream) -> std::io::Result<()> {
-    let body = INDEX_HTML;
+async fn write_index(stream: &mut tokio::net::TcpStream, auth: &Auth) -> std::io::Result<()> {
+    // The page loads the stream itself, so it has to carry the token forward.
+    // Rewriting the `<img>` source here (rather than having the page read
+    // `location.search`) keeps the token out of any JS string and means the
+    // markup is honest about what it fetches.
+    let body = INDEX_HTML.replace(
+        r#"src="/stream""#,
+        &format!(r#"src="/stream?token={}""#, auth.token),
+    );
+    let body = body.as_str();
     let resp = format!(
         "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{}",
         body.len(),
@@ -211,7 +411,9 @@ async fn write_text(
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
+        503 => "Service Unavailable",
         _ => "Error",
     };
     let resp = format!(

@@ -22,7 +22,7 @@ pub struct Policy {
 
 impl Policy {
     /// True if any host restriction is configured.
-    fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         !self.allow_hosts.is_empty() || !self.deny_hosts.is_empty()
     }
 
@@ -91,11 +91,18 @@ pub enum PolicyDenial {
 }
 
 /// Match a pattern (supports exact and suffix `*.example.com`).
+///
+/// Matching is ASCII-case-insensitive on both branches. An earlier version
+/// compared the wildcard branch with `==`/`ends_with`, so `--allow-host
+/// '*.Example.com'` matched nothing at all while the exact branch was already
+/// case-insensitive — the same pattern behaving two different ways.
 fn host_matches(pattern: &str, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_prefix("*.") {
         host == suffix || host.ends_with(&format!(".{suffix}"))
     } else {
-        pattern.eq_ignore_ascii_case(host)
+        pattern == host
     }
 }
 

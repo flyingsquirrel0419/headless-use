@@ -15,9 +15,15 @@
 //!
 //! ## Security
 //! The HTTP server binds to `127.0.0.1` by default. `--viewer-host` can widen
-//! that for remote viewing; the stream is unauthenticated, so that is an
-//! explicit operator decision and [`http::serve`] warns about it. The CDP
-//! endpoint is unaffected and always stays loopback-only.
+//! that for remote viewing, and [`http::serve`] warns whenever it does.
+//!
+//! Access is gated by a bearer token carried in the URL (`?token=…`), generated
+//! at startup unless `--viewer-token` pins one. Enforcement depends on the bind
+//! address: **required** on a non-loopback bind, **optional** on loopback —
+//! generated, printed and accepted there, but a request that omits it is still
+//! served. See [`http::ViewerOptions::require_token`] for why.
+//!
+//! The CDP endpoint is unaffected and always stays loopback-only.
 
 pub mod http;
 pub mod screencast;

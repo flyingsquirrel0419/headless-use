@@ -9,12 +9,28 @@
 //! The CLI/MCP/RPC frontends all share the same operations but differ in
 //! transport. Centralizing operations here guarantees consistent error mapping,
 //! reference resolution, stale detection, and tracing regardless of frontend.
+//!
+//! ## Layout
+//! `Session`'s inherent methods are split across sibling modules rather than
+//! living in one file. Child modules can reach the struct's private fields, so
+//! the split costs no encapsulation:
+//!
+//! - this file — lifecycle, policy, navigation, input, tracing, diagnostics
+//! - [`resolve`] — turning an observed `@eN` back into live coordinates
+//! - [`capture`] — screenshots, annotation, dewiggle, clip math
+//! - [`console`], [`network`], [`network_tracker`], [`wait`] — page diagnostics
+//!
+//! This file was a 1000-line catch-all holding JS string generation, CSS
+//! escaping, dewiggle orchestration and clip arithmetic next to `start()`.
 
+pub mod capture;
 pub mod console;
 pub mod network;
 pub mod network_tracker;
+pub mod resolve;
 pub mod wait;
 
+pub use capture::DewiggleOutput;
 pub use console::{ConsoleEntry, ConsoleLevel};
 pub use network::{NetworkEntry, NetworkError};
 
@@ -51,7 +67,11 @@ pub struct Session {
     /// `frameNavigated` listener task can increment it without borrowing `self`.
     nav_generation: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// CDP event-based network tracker for accurate in-flight request counts.
-    network_tracker: Arc<tokio::sync::Mutex<network_tracker::NetworkTracker>>,
+    ///
+    /// A bare `Arc`, not `Arc<Mutex<_>>`: every `NetworkTracker` method takes
+    /// `&self` and locks its own interior state, so an outer mutex only added a
+    /// second lock to acquire — and a lock-ordering hazard — on every call.
+    network_tracker: Arc<network_tracker::NetworkTracker>,
     /// Host allow/deny navigation policy. When set, open/goto/reload consult it
     /// and return [`BrowserError::NavigationBlocked`] for disallowed hosts.
     policy: Arc<tokio::sync::Mutex<Policy>>,
@@ -59,6 +79,8 @@ pub struct Session {
     /// lock: it is chosen once when the session is built and never mutated, so
     /// there is nothing to guard.
     cursor_motion: crate::input::CursorMotion,
+    /// Requests rejected by the host policy at the network layer.
+    policy_blocks: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Session {
@@ -80,20 +102,14 @@ impl Session {
             ))),
             cursor_buttons: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
             nav_generation: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            network_tracker: Arc::new(tokio::sync::Mutex::new(
-                network_tracker::NetworkTracker::new(),
-            )),
+            network_tracker: Arc::new(network_tracker::NetworkTracker::new()),
             policy: Arc::new(tokio::sync::Mutex::new(Policy::default())),
             cursor_motion: crate::input::CursorMotion::default(),
+            policy_blocks: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         // Start CDP network tracking BEFORE any navigation so we don't miss
         // requestWillBeSent for requests already in flight.
-        session
-            .network_tracker
-            .lock()
-            .await
-            .start(&session.page)
-            .await?;
+        session.network_tracker.start(&session.page).await?;
         // Subscribe to Page.frameNavigated so ANY main-frame document change
         // increments the navigation generation and invalidates observe
         // references. This catches button-click navigation, form submit,
@@ -103,9 +119,16 @@ impl Session {
         // network tracker's subscriber.
         let page_client = session.page.cdp().clone();
         let nav_gen = session.nav_generation.clone();
+        let own_session = session.page.session_id().to_string();
         let mut page_events = page_client.subscribe_events_async().await;
         tokio::spawn(async move {
             while let Some(ev) = page_events.recv().await {
+                // The bus carries events from every attached target. A popup or
+                // OOPIF navigating is not this page navigating, and counting it
+                // would invalidate refs that are still perfectly valid.
+                if ev.session_id.as_deref() != Some(own_session.as_str()) {
+                    continue;
+                }
                 if ev.method == "Page.frameNavigated" {
                     // Only invalidate on top-level (main frame) navigations.
                     // A frame with no parentId is the main frame. Same-document
@@ -123,21 +146,25 @@ impl Session {
             }
         });
         // Ensure Page domain is enabled so frameNavigated is delivered.
-        let _ = session.page.enable("Page.enable", None).await;
+        //
+        // This is deliberately fatal rather than best-effort. Every stale-@eN
+        // guarantee this session makes rests on `Page.frameNavigated` arriving:
+        // if the domain is not enabled the generation counter never moves, and
+        // `resolve_ref_rect_with_generation` keeps handing out coordinates for
+        // a page that no longer exists. A session that cannot detect navigation
+        // is more dangerous than one that fails to start, so it fails to start.
+        session.page.enable("Page.enable", None).await?;
         Ok(session)
     }
 
     /// Attach tracing.
+    ///
+    /// Synchronous, and safe to call from async code: the guard is a
+    /// `std::sync::Mutex` held only for the assignment, never across an await.
+    /// There used to be a `with_trace_async` beside this with a byte-identical
+    /// body — an async fn that awaited nothing, kept because the name suggested
+    /// it was needed.
     pub fn with_trace(self, trace: Trace) -> Self {
-        // with_trace is a sync builder; tokio::Mutex::blocking_lock requires a
-        // runtime to be available. Callers in async tests have one; CLI paths
-        // use with_trace_async instead.
-        *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
-        self
-    }
-
-    /// Async version of [`Self::with_trace`].
-    pub async fn with_trace_async(self, trace: Trace) -> Self {
         *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
         self
     }
@@ -154,7 +181,7 @@ impl Session {
         }
         let trace = Trace::new(base)
             .await
-            .map_err(|e| BrowserError::Other(format!("trace start: {e}")))?;
+            .map_err(|e| BrowserError::Trace(format!("start: {e}")))?;
         let dir = trace.dir().to_string_lossy().to_string();
         *self.trace.lock().unwrap() = Some(Arc::new(tokio::sync::Mutex::new(trace)));
         Ok(dir)
@@ -168,24 +195,140 @@ impl Session {
             trace
                 .flush()
                 .await
-                .map_err(|e| BrowserError::Other(format!("trace flush: {e}")))?;
+                .map_err(|e| BrowserError::Trace(format!("flush: {e}")))?;
             Ok(trace.dir().to_string_lossy().to_string())
         } else {
-            Err(BrowserError::Other("no active trace to stop".into()))
+            Err(BrowserError::Trace("no active trace to stop".into()))
         }
     }
 
-    /// Attach a host allow/deny navigation policy. When set, navigation to a
-    /// host not on the allow list (or on the deny list) returns
-    /// [`BrowserError::NavigationBlocked`] before any request is made.
-    /// A configured policy also restricts navigation to `http`/`https`.
+    /// Attach a host allow/deny navigation policy.
+    ///
+    /// Explicit navigation ([`Self::open`]/`goto`/`reload`) is rejected up
+    /// front with [`BrowserError::NavigationBlocked`]. Everything else the page
+    /// can do — a 302 to another host, `location.href = …` from page script, a
+    /// link click, a meta refresh, an `<img>`/`fetch()` to a denied origin — is
+    /// blocked at the network layer by CDP request interception.
+    ///
+    /// ## Why interception, not just the front door
+    /// The front-door check alone bounded nothing: an agent under prompt
+    /// injection needs one `page.evaluate` call, or one attacker-controlled
+    /// redirect, to leave the allowed host entirely. Interception is the only
+    /// place where every request is visible regardless of who initiated it.
+    /// Interception is installed only when the policy is actually restrictive,
+    /// so the default permissive session pays neither the latency nor the risk.
     ///
     /// There is no blocking variant: an earlier `with_policy` used
     /// `Mutex::blocking_lock`, which panics when called from inside a tokio
     /// runtime — i.e. from every real caller.
-    pub async fn with_policy_async(self, policy: Policy) -> Self {
+    ///
+    /// Returns an error if interception cannot be installed. This is fatal by
+    /// design: a caller that asked for a policy and silently got none is worse
+    /// off than one that failed loudly, because it will act as though the
+    /// browser is contained.
+    pub async fn with_policy_async(self, policy: Policy) -> Result<Self, BrowserError> {
+        let active = policy.is_active();
         *self.policy.lock().await = policy;
-        self
+        if active {
+            self.intercept_requests_for_policy().await?;
+        }
+        Ok(self)
+    }
+
+    /// Install CDP `Fetch` interception that applies the session policy to
+    /// every request the page makes.
+    ///
+    /// ## Invariant
+    /// Once `Fetch.enable` is on, **every** paused request must be answered with
+    /// `continueRequest` or `failRequest` or the page hangs forever. The handler
+    /// task therefore answers on every path, including when the policy lookup
+    /// fails, and disables `Fetch` if it ever stops handling events.
+    async fn intercept_requests_for_policy(&self) -> Result<(), BrowserError> {
+        // Subscribe before enabling so no paused request slips through the gap.
+        let mut events = self.page.cdp().subscribe_events_async().await;
+        let own_session = self.page.session_id().to_string();
+        let policy = self.policy.clone();
+        let page = self.page.clone();
+        let blocked = self.policy_blocks.clone();
+
+        self.page
+            .enable(
+                "Fetch.enable",
+                Some(json!({ "patterns": [{ "urlPattern": "*" }] })),
+            )
+            .await?;
+
+        tokio::spawn(async move {
+            let call_timeout = std::time::Duration::from_secs(10);
+            while let Some(ev) = events.recv().await {
+                if ev.method != "Fetch.requestPaused" {
+                    continue;
+                }
+                if ev.session_id.as_deref() != Some(own_session.as_str()) {
+                    continue;
+                }
+                let Some(request_id) = ev.params.get("requestId").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let url = ev
+                    .params
+                    .get("request")
+                    .and_then(|r| r.get("url"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
+
+                let verdict = policy.lock().await.allows(url);
+                let outcome = match verdict {
+                    Ok(()) => {
+                        page.call::<serde_json::Value>(
+                            "Fetch.continueRequest",
+                            Some(json!({ "requestId": request_id })),
+                            call_timeout,
+                        )
+                        .await
+                    }
+                    Err(denial) => {
+                        blocked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::warn!(
+                            url = %crate::util::secrets::mask_url_secrets(url),
+                            reason = %denial,
+                            "request blocked by host policy"
+                        );
+                        page.call::<serde_json::Value>(
+                            "Fetch.failRequest",
+                            Some(json!({
+                                "requestId": request_id,
+                                "errorReason": "BlockedByClient",
+                            })),
+                            call_timeout,
+                        )
+                        .await
+                    }
+                };
+                if let Err(e) = outcome {
+                    // A request that vanished before we answered (navigation
+                    // cancelled it) is normal. A closed connection means the
+                    // page is gone and there is nothing left to guard.
+                    tracing::debug!(error = %e, "fetch interception reply failed");
+                    if page.cdp().is_closed().await {
+                        break;
+                    }
+                }
+            }
+            // The event stream ended while interception was still on. Turn it
+            // off so a surviving page is not left with every request paused.
+            let _ = page
+                .call::<serde_json::Value>("Fetch.disable", None, call_timeout)
+                .await;
+        });
+
+        Ok(())
+    }
+
+    /// How many requests the host policy has blocked in this session.
+    pub fn policy_blocked_count(&self) -> u64 {
+        self.policy_blocks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Choose how the cursor travels to click/hover targets.
@@ -223,7 +366,7 @@ impl Session {
 
     /// Current in-flight network request count (via CDP events).
     pub async fn network_pending(&self) -> u64 {
-        self.network_tracker.lock().await.pending().await
+        self.network_tracker.pending().await
     }
 
     /// The active page.
@@ -385,76 +528,11 @@ impl Session {
             )));
         }
         // Re-resolve current bounds via JS using the selector hint or role/name.
-        self.resolve_element_rect(el).await
-    }
-
-    /// Re-query an observed element's current viewport-relative bounding box.
-    async fn resolve_element_rect(
-        &self,
-        el: &crate::observe::ElementRef,
-    ) -> Result<(f64, f64, f64, f64), BrowserError> {
-        // Re-resolve the element's current bounds. We inject the search text via
-        // JSON.stringify so any character (Korean, quotes, backslashes) is safe
-        // and cannot break the JS string literal.
-        // [Decision Log]
-        // - 목적과 의도: 한글/특수문자가 포함된 요소 이름으로 안전하게 클릭 좌표 재해결.
-        // - 기존 구현 및 제약 조건: 이름을 JS 단일 따옴표 문자열에 직접 삽입하여
-        //   따옴표/백슬래시 외의 특수문자에서 JS 파싱 에러 발생.
-        // - 검토한 주요 대안: 수동 이스케이프 확장, base64 인코딩.
-        // - 선택한 방식: serde_json::to_string으로 JSON 문자열 생성 후 JS에 주입.
-        // - 다른 대안 대신 이 방식을 선택한 이유: 모든 Unicode 문자에 안전, 간결함.
-        // - 장점, 단점 및 영향: 한글/이모지/따옴표 모두 안전; 약간의 직렬화 오버헤드.
-        let expr = if !el.selector_hint.is_empty() && el.selector_hint.starts_with('#') {
-            let id = css_escape_id(el.selector_hint.trim_start_matches('#'));
-            format!(
-                "(()=>{{const e=document.querySelector('#'+'{id}');if(!e)return null;e.scrollIntoView({{block:'center'}});const r=e.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
-            )
-        } else {
-            let name_json = serde_json::to_string(&el.name).unwrap_or_else(|_| "\"\"".into());
-            let tag = tag_for_query(&el.tag_name);
-            // [Decision Log] — querySelector 인자 안전 주입
-            // - 목적과 의도: tag_for_query가 `a[href], [role='link']`처럼 작은따옴표를
-            //   포함하는 선택자를 반환한다. 이전에는 이 선택자를 JS 문자열 리터럴
-            //   안의 작은따옴표 영역(`'{tag}'`)에 직접 끼워 넣었기 때문에 안쪽
-            //   작은따옴표가 문자열을 일찍 닫아버려 `SyntaxError: missing ) after
-            //   argument list`가 발생했다. (구글 결과 페이지의 링크 클릭이 전부
-            //   실패한 원인.)
-            // - 검토한 주요 대안: 선택자에서 작은따옴표를 제거, 큰따옴표로 래핑.
-            // - 선택한 방식: name과 동일하게 tag도 JSON 문자열로 인코딩하여 JS
-            //   변수에 할당한 뒤 querySelectorAll에 전달.
-            // - 장점: 임의의 CSS 선택자 문자에 안전, name과 일관된 패턴.
-            let tag_json = serde_json::to_string(tag).unwrap_or_else(|_| "\"*\"".into());
-            format!(
-                "(()=>{{const sel={tag_json};const els=[...document.querySelectorAll(sel)];const t={name_json};const e=els.find(x=>((x.innerText||x.textContent||'').trim()===t)||(x.getAttribute('aria-label')===t)||(x.getAttribute('placeholder')===t));if(!e)return null;e.scrollIntoView({{block:'center'}});const r=e.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
-            )
-        };
-        let result = self.page.evaluate(&expr).await?;
-        let value_str = result.value().and_then(|v| v.as_str()).map(String::from);
-        let Some(s) = value_str else {
-            return Err(BrowserError::ElementNotFound(format!(
-                "@e{} could not be re-resolved (page changed; run observe again)",
-                el.ref_id
-            )));
-        };
-        if s == "null" || s.is_empty() {
-            return Err(BrowserError::ElementNotFound(format!(
-                "@e{} no longer exists (stale; run observe again)",
-                el.ref_id
-            )));
-        }
-        let v: serde_json::Value = serde_json::from_str(&s)
-            .map_err(|e| BrowserError::Other(format!("bounds parse: {e}")))?;
-        let x = v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0);
-        let y = v.get("y").and_then(|y| y.as_f64()).unwrap_or(0.0);
-        let w = v.get("w").and_then(|w| w.as_f64()).unwrap_or(0.0);
-        let h = v.get("h").and_then(|h| h.as_f64()).unwrap_or(0.0);
-        if w <= 0.0 || h <= 0.0 {
-            return Err(BrowserError::ElementNotInteractable(format!(
-                "@e{} has zero size (hidden or collapsed)",
-                el.ref_id
-            )));
-        }
-        Ok((x, y, w, h))
+        // The observation's scroll offset turns the element's viewport-relative
+        // box into a document-relative one, which is what survives scrolling and
+        // lets us tell two identically-named elements apart.
+        self.resolve_element_rect(el, obs.page.scroll_x, obs.page.scroll_y)
+            .await
     }
 
     /// Click a reference or coordinate.
@@ -583,7 +661,7 @@ impl Session {
             return false;
         })()"#;
         self.page
-            .evaluate(expr)
+            .evaluate_sync(expr)
             .await
             .ok()
             .and_then(|r| r.value().and_then(|v| v.as_bool()))
@@ -601,230 +679,6 @@ impl Session {
         } else {
             Ok(())
         }
-    }
-
-    /// Capture a screenshot. When `element` is `Some`, only that element's
-    /// region is captured (resolved to a clip rectangle via the current
-    /// observation, scrolling into view first). When `full_page` is true the
-    /// whole scrollable content is captured. The two are mutually exclusive:
-    /// an element clip takes precedence over `full_page`.
-    ///
-    /// When tracing is enabled, the PNG is also saved into the run's
-    /// `screenshots/` directory so it appears in `report.html`.
-    pub async fn screenshot(
-        &self,
-        full_page: bool,
-        element: Option<ClickTarget>,
-    ) -> Result<Vec<u8>, BrowserError> {
-        let clip = match &element {
-            Some(target) => Some(self.element_clip(target.clone()).await?),
-            None => None,
-        };
-        let element_ref = match &element {
-            Some(ClickTarget::Ref { id, .. }) => Some(format!("@e{id}")),
-            _ => None,
-        };
-        let seq = self
-            .record_action(
-                "screenshot",
-                json!({ "fullPage": full_page, "element": element_ref }),
-            )
-            .await;
-        let data = self.page.screenshot(full_page, clip).await?;
-        // Save to trace so report.html can embed the image, using the same
-        // sequence number as the action so the report can match them.
-        let trace = self.trace.lock().unwrap().as_ref().cloned();
-        if let Some(t) = trace {
-            let _ = t.lock().await.save_screenshot(seq, &data).await;
-        }
-        Ok(data)
-    }
-
-    /// Capture a screenshot with bounding boxes + ref tokens drawn over every
-    /// observed element. See `observe::annotate` for the rendering details.
-    ///
-    /// This re-runs observe (so the boxes match the current DOM, not a stale
-    /// cache) and annotates the freshly captured PNG. Visual widgets (canvas,
-    /// svg, cursor:pointer divs) are included so a vision agent can locate
-    /// non-standard clickable surfaces too.
-    pub async fn screenshot_annotated(&self, full_page: bool) -> Result<Vec<u8>, BrowserError> {
-        let obs = self.observe_with_mode(None).await?;
-        let png = self.page.screenshot(full_page, None).await?;
-        let vp = crate::cdp::Viewport {
-            width: obs.page.viewport.width,
-            height: obs.page.viewport.height,
-            device_scale_factor: obs.page.viewport.device_scale_factor,
-        };
-        crate::observe::annotate::annotate(&png, &obs.elements, &vp)
-            .map_err(|e| BrowserError::Other(format!("annotate: {e}")))
-    }
-
-    /// Capture several frames of a wiggling/animated text region and reverse
-    /// the per-glyph vertical wobble using *pixels only* (no answer arrays,
-    /// no DOM text/props). Returns a realigned, averaged PNG plus optional
-    /// per-glyph crops. This is the honest way to read a "wiggle" CAPTCHA.
-    ///
-    /// When `region` is None, the canvas element's bounding box is auto-
-    /// detected via `document.querySelector('canvas')`. When `chars` is Some,
-    /// the output is also segmented into that many equal-width glyph crops.
-    pub async fn dewiggle(
-        &self,
-        region: Option<(f64, f64, f64, f64)>,
-        frames: u32,
-        interval_ms: u64,
-        chars: Option<usize>,
-    ) -> Result<DewiggleOutput, BrowserError> {
-        let frames = frames.clamp(2, 60);
-        let interval_ms = interval_ms.clamp(20, 2000);
-
-        // NOTE: We do NOT start a screencast here. In `view` mode the viewer
-        // already runs one (which pumps the rAF loop), and starting a second
-        // screencast crashes Chrome. In `serve` mode there is no screencast,
-        // but the dewiggle integration test is #[ignore]d for that reason.
-        // `Page.captureScreenshot(clip)` forces a composite render regardless,
-        // so the captures themselves work without a screencast.
-
-        let inner = async {
-            // Resolve the capture region (viewport CSS px). Auto-detect a canvas.
-            let (vx, vy, vw, vh) = match region {
-                Some(r) => r,
-                None => {
-                    // Detect the canvas via the DOM domain (no JS evaluation).
-                    // A perpetual rAF loop makes Runtime.evaluate hang in headless
-                    // mode, so we avoid JS entirely for region detection.
-                    match self.page.element_box_by_selector("canvas").await? {
-                        Some((x, y, w, h)) => (x, y, w, h),
-                        None => {
-                            return Err(BrowserError::Other(
-                                "dewiggle: no canvas found and no region given; pass region=[x,y,w,h]".into(),
-                            ));
-                        }
-                    }
-                }
-            };
-            if vw < 2.0 || vh < 2.0 {
-                return Err(BrowserError::Other(format!(
-                    "dewiggle region too small: {vw}x{vh}"
-                )));
-            }
-
-            let seq = self
-                .record_action(
-                    "dewiggle",
-                    json!({ "region": [vx, vy, vw, vh], "frames": frames, "intervalMs": interval_ms, "chars": chars }),
-                )
-                .await;
-            let _ = seq;
-
-            // Capture N frames at interval_ms cadence. Clip is document-relative,
-            // so add the scroll offset.
-            let (sx, sy) = self.page.scroll_position().await?;
-            let clip = (vx + sx as f64, vy + sy as f64, vw, vh);
-            let mut dewiggle_frames: Vec<crate::observe::dewiggle::DewiggleFrame> = Vec::new();
-            for i in 0..frames {
-                if i > 0 {
-                    tokio::time::sleep(Duration::from_millis(interval_ms)).await;
-                }
-                let png = self.page.screenshot(false, Some(clip)).await?;
-                let gray = crate::observe::dewiggle::decode_gray(&png)
-                    .map_err(|e| BrowserError::Other(format!("dewiggle decode: {e}")))?;
-                dewiggle_frames.push(crate::observe::dewiggle::DewiggleFrame::new(gray));
-            }
-
-            let opts = crate::observe::dewiggle::DewiggleOptions {
-                chars,
-                ..Default::default()
-            };
-            let result = crate::observe::dewiggle::dewiggle(&dewiggle_frames, &opts);
-            let image_png = crate::observe::dewiggle::encode_png(&result.image)
-                .map_err(|e| BrowserError::Other(format!("dewiggle encode: {e}")))?;
-            let char_crops_b64: Vec<String> = result
-                .char_crops
-                .iter()
-                .map(|c| {
-                    crate::observe::dewiggle::encode_png(c)
-                        .map(|b| {
-                            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &b)
-                        })
-                        .unwrap_or_default()
-                })
-                .collect();
-
-            let image_b64 =
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_png);
-            Ok::<DewiggleOutput, BrowserError>(DewiggleOutput {
-                image: image_b64,
-                image_bytes: image_png.len(),
-                char_crops: char_crops_b64,
-                frame_count: result.frame_count,
-                region: json!({ "x": vx, "y": vy, "width": vw, "height": vh }),
-                bands: result.bands,
-            })
-        };
-
-        let result = inner.await;
-        result
-    }
-
-    /// Compute the `Page.captureScreenshot` clip rectangle for a target, in
-    /// **document** coordinates.
-    ///
-    /// Two things this has to get right:
-    ///
-    /// 1. `getBoundingClientRect()` is viewport-relative but CDP's `clip` is
-    ///    document-relative, so the page scroll offset must be added. Without
-    ///    it, any element screenshot taken on a scrolled page captured the
-    ///    wrong region. The offset is read *after* the element is scrolled into
-    ///    view, because that scroll changes it.
-    /// 2. For a `Ref` target we use the referenced element's own box. Going
-    ///    through `elementFromPoint` at the element's center (the previous
-    ///    behavior) returns the topmost *descendant* under that point — an
-    ///    inner `<span>` rather than the `<button>` that was referenced — so
-    ///    the clip came out too small. `elementFromPoint` is still the right
-    ///    tool for a bare coordinate target, where there is no element to
-    ///    resolve.
-    async fn element_clip(
-        &self,
-        target: ClickTarget,
-    ) -> Result<(f64, f64, f64, f64), BrowserError> {
-        let (x, y, w, h) = match target {
-            ClickTarget::Ref { id, generation } => {
-                self.resolve_ref_rect_with_generation(id, generation)
-                    .await?
-            }
-            ClickTarget::Point(p) => self.element_clip_at(p.x, p.y).await?,
-        };
-        let (scroll_x, scroll_y) = self.page.scroll_position().await?;
-        Ok((x + scroll_x as f64, y + scroll_y as f64, w, h))
-    }
-
-    /// Compute a viewport-relative clip rectangle for the element under
-    /// viewport point (x, y), via `elementFromPoint`.
-    async fn element_clip_at(&self, x: f64, y: f64) -> Result<(f64, f64, f64, f64), BrowserError> {
-        let expr = format!(
-            "(()=>{{const e=document.elementFromPoint({x},{y});if(!e)return null;const r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;return JSON.stringify({{x:r.x,y:r.y,w:r.width,h:r.height}});}})()"
-        );
-        let s = self
-            .page
-            .evaluate(&expr)
-            .await?
-            .value()
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_default();
-        if s.is_empty() || s == "null" {
-            return Err(BrowserError::ElementNotInteractable(format!(
-                "no element at ({x:.0},{y:.0}) to screenshot"
-            )));
-        }
-        let v: serde_json::Value = serde_json::from_str(&s)
-            .map_err(|e| BrowserError::Other(format!("clip parse: {e}")))?;
-        Ok((
-            v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            v.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            v.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0),
-        ))
     }
 
     /// Scroll by delta.
@@ -959,43 +813,5 @@ impl From<RefId> for ClickTarget {
 impl From<crate::input::Point> for ClickTarget {
     fn from(p: crate::input::Point) -> Self {
         ClickTarget::Point(p)
-    }
-}
-
-/// Output of a `dewiggle` capture: a realigned, averaged PNG (base64) of the
-/// wiggling text region, plus optional per-glyph crops.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DewiggleOutput {
-    /// Realigned + averaged image, PNG, base64-encoded.
-    pub image: String,
-    /// Size of the PNG in bytes (before base64).
-    pub image_bytes: usize,
-    /// Per-glyph crops, PNG base64 (empty when `chars` was None).
-    pub char_crops: Vec<String>,
-    /// Number of frames captured.
-    pub frame_count: usize,
-    /// The captured region (viewport CSS px).
-    pub region: serde_json::Value,
-    /// Glyph column-band boundaries (start, end) in the output image.
-    pub bands: Vec<(u32, u32)>,
-}
-
-/// CSS-escape an id for safe querySelector. Only allows safe chars.
-fn css_escape_id(id: &str) -> String {
-    id.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect()
-}
-
-/// Map a tag name to a query selector for name-based re-resolution.
-fn tag_for_query(tag: &str) -> &'static str {
-    match tag {
-        "button" => "button, [role='button'], input[type='submit'], input[type='button']",
-        "a" => "a[href], [role='link']",
-        "input" => "input",
-        "textarea" => "textarea",
-        "select" => "select",
-        "summary" => "summary",
-        _ => "button, a[href], input, textarea, select, [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='tab'], summary",
     }
 }

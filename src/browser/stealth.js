@@ -362,13 +362,13 @@
   } catch (e) {}
 
   // ---- 7. hide this tool's own instrumentation ------------------------------
-  // collectors.js (console + network capture) wraps `fetch`, XHR and the
-  // console methods and parks its buffers on `window`. Both are visible: a
-  // wrapped `fetch.toString()` is not native source, and the buffers show up in
-  // `Object.keys(window)`. Report native source for the wrappers and make the
-  // buffers non-enumerable; the collectors keep working untouched.
+  // collectors.js wraps the console methods and parks its buffer on `window`,
+  // where it shows up in `Object.keys(window)`. Make the buffer non-enumerable;
+  // the collector keeps working untouched. (`fetch`/XHR are no longer wrapped —
+  // network capture moved to CDP — so there is no wrapper left to disguise
+  // there, which removes a detection surface rather than hiding one.)
   try {
-    ['__hu_installed__', '__hu_console__', '__hu_network__', '__hu_net_inflight__'].forEach(
+    ['__hu_installed__', '__hu_console__'].forEach(
       function (key) {
         var d = Object.getOwnPropertyDescriptor(window, key);
         if (d && d.enumerable && 'value' in d) {
