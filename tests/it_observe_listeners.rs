@@ -30,3 +30,47 @@ async fn canvas_is_flagged_opaque() {
     assert!(canvas.opaque_interactive, "canvas must be opaque_interactive");
     s.shutdown().await;
 }
+
+#[tokio::test]
+async fn direct_listener_div_is_promoted() {
+    let (_profile, s, srv) = session().await;
+    s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    let refresh = obs
+        .elements
+        .iter()
+        .find(|e| e.selector_hint == "#refresh")
+        .expect("refresh div promoted via getEventListeners");
+    assert!(refresh.visual, "listener-promoted elements are heuristic (visual)");
+    assert!(!refresh.opaque_interactive, "few children: not opaque");
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn delegation_container_is_opaque() {
+    let (_profile, s, srv) = session().await;
+    s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    let board = obs
+        .elements
+        .iter()
+        .find(|e| e.selector_hint == "#board")
+        .expect("board container found");
+    assert!(board.opaque_interactive, "9 inert children + listener = opaque");
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn inert_div_is_not_promoted() {
+    let (_profile, s, srv) = session().await;
+    s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    let obs = s.observe().await.unwrap();
+    assert!(
+        !obs.elements.iter().any(|e| e.selector_hint == "#inert"),
+        "no listener: must not be promoted"
+    );
+    s.shutdown().await;
+}

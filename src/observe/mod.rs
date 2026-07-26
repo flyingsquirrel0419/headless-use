@@ -13,6 +13,7 @@
 
 pub mod annotate;
 pub mod dewiggle;
+pub(crate) mod listeners;
 pub mod reference;
 
 pub use reference::{
@@ -72,8 +73,20 @@ impl<'a> ObserveBuilder<'a> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let candidates: Vec<listeners::Candidate> = raw
+            .get("candidates")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let promoted = listeners::detect(self.page, &candidates).await;
+
         let mut registry = RefRegistry::new();
-        for el in &elements {
+        for el in elements.iter().chain(promoted.iter()) {
             registry.insert(el.clone());
         }
 
