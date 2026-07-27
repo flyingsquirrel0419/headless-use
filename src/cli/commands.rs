@@ -328,7 +328,11 @@ pub async fn view(args: ViewArgs) -> i32 {
         }
     };
     if args.launch.json {
-        println!(
+        // stderr, not stdout: this process speaks JSON-RPC on stdout, so even
+        // the machine-readable viewer banner must stay off that channel — a
+        // JSON-RPC client reading stdout line-by-line must only ever see
+        // protocol responses.
+        eprintln!(
             "{}",
             serde_json::json!({
                 "viewer": {

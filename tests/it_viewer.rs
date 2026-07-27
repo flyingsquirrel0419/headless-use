@@ -112,6 +112,51 @@ async fn screencast_produces_jpeg_frames() {
     vs.close().await;
 }
 
+/// After `stop()` the background task must be gone and the cast must never
+/// re-arm: no `Page.startScreencast` restart, no new frames — ever.
+#[tokio::test]
+async fn screencast_stop_cancels_task_and_never_restarts() {
+    let vs = ViewerSession::start().await;
+    let page = vs.page();
+    let fixture = std::env::current_dir()
+        .unwrap()
+        .join("tests/fixtures/basic-form.html");
+    let url = format!("file://{}", fixture.display());
+    page.goto(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let cast = Screencast::start(&page, 70, 800, 600, 30).await.unwrap();
+    let mut rx = cast.subscribe();
+    let got = tokio::time::timeout(Duration::from_secs(6), rx.changed()).await;
+    assert!(got.is_ok(), "screencast did not produce a frame in time");
+
+    cast.stop().await.expect("stop");
+    assert!(
+        cast.task_finished(),
+        "background task must have terminated by the time stop() returns"
+    );
+
+    // Drain any frame published before stop completed, then wait past the
+    // idle re-arm interval (2s) plus margin: the old bug re-issued
+    // Page.startScreencast from the leaked task ~2s after stop. Repaints are
+    // forced so a re-armed cast WOULD produce frames.
+    let _ = rx.borrow_and_update();
+    for i in 0..3u32 {
+        let color = if i % 2 == 0 { "#eef" } else { "#fee" };
+        let _ = page
+            .evaluate(&format!(
+                "document.title = 'repaint-{i}'; document.body.style.background = '{color}';"
+            ))
+            .await;
+        let new_frame = tokio::time::timeout(Duration::from_millis(1200), rx.changed()).await;
+        assert!(
+            new_frame.is_err(),
+            "no frame may be published after stop() (iteration {i})"
+        );
+    }
+    vs.close().await;
+}
+
 #[tokio::test]
 async fn viewer_http_serves_index_and_stream() {
     let vs = ViewerSession::start().await;

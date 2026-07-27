@@ -135,6 +135,11 @@ impl Trace {
             }
         }
         let meta = json!({
+            // Trace format version: the schema of actions.jsonl entries and of
+            // this metadata file. Bumped on incompatible changes; additive
+            // fields do not bump it.
+            "formatVersion": crate::protocol::SCHEMA_VERSION,
+            // The crate that wrote the trace.
             "version": crate::VERSION,
             "startedAt": util::timestamp_utc(),
             "durationMs": self.start.elapsed().as_millis(),

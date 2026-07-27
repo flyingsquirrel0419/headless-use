@@ -44,6 +44,9 @@ pub struct Response {
     /// Protocol version.
     #[serde(rename = "jsonrpc")]
     pub version: String,
+    /// headless-use result-schema version (see [`SCHEMA_VERSION`]).
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
 }
 
 /// JSON-RPC error response.
@@ -56,6 +59,9 @@ pub struct ErrorResponse {
     /// Protocol version.
     #[serde(rename = "jsonrpc")]
     pub version: String,
+    /// headless-use result-schema version (see [`SCHEMA_VERSION`]).
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
 }
 
 /// The error payload.
@@ -80,12 +86,19 @@ impl ErrorResponse {
                 recovery: e.recovery(),
             },
             version: "2.0".into(),
+            schema_version: SCHEMA_VERSION,
         }
     }
 }
 
 /// Protocol version string.
 pub const PROTOCOL_VERSION: &str = "2.0";
+
+/// Version of the headless-use result/error schema carried on every JSON-RPC
+/// response (`schemaVersion`), on `observe` results, and (as `formatVersion`)
+/// in trace `metadata.json`. Bumped only when an existing field changes
+/// meaning or is removed; purely additive changes do not bump it.
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// Stream stdin lines from a dedicated OS thread.
 ///

@@ -47,6 +47,10 @@ use crate::observe::{Observation, ObserveBuilder, RefId};
 use crate::security::Policy;
 use crate::trace::Trace;
 
+/// The effects window used when a caller opts into post-click effect sampling
+/// without naming a duration (e.g. JSON-RPC `click` with `"effects": true`).
+pub const DEFAULT_CLICK_EFFECTS_WINDOW: Duration = Duration::from_millis(300);
+
 /// A long-lived browser session.
 pub struct Session {
     browser: Arc<Browser>,
@@ -110,7 +114,9 @@ impl Session {
             policy: Arc::new(tokio::sync::Mutex::new(Policy::default())),
             cursor_motion: crate::input::CursorMotion::default(),
             policy_blocks: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            click_observe_window: Duration::from_millis(300),
+            // Effects sampling is opt-in: zero disables it by default so the
+            // basic click path stays light (see `with_click_observe_window`).
+            click_observe_window: Duration::ZERO,
         };
         // Start CDP network tracking BEFORE any navigation so we don't miss
         // requestWillBeSent for requests already in flight.
@@ -355,8 +361,13 @@ impl Session {
         self.cursor_motion
     }
 
-    /// Set the post-click effect observation window (default 300 ms).
-    /// `Duration::ZERO` disables effect sampling; the hit test still runs.
+    /// Set the session-default post-click effect observation window.
+    ///
+    /// The default is `Duration::ZERO`: effect sampling is opt-in, because it
+    /// adds three `Runtime.evaluate` round-trips and a fixed sleep of the
+    /// window length to every click. A non-zero window turns effect sampling
+    /// on for every click of this session; per-call opt-in is available via
+    /// [`Self::click_with_effects_window`]. The hit test always runs.
     pub fn with_click_observe_window(mut self, window: Duration) -> Self {
         self.click_observe_window = window;
         self
@@ -437,15 +448,13 @@ impl Session {
     }
 
     /// Observe the current page and cache the result.
+    ///
+    /// This is the light default: one JS extraction pass plus a handful of
+    /// fixed CDP calls. The programmatic-listener scan (up to two CDP
+    /// round-trips per candidate) is opt-in via
+    /// [`Self::observe_with_options`].
     pub async fn observe(&self) -> Result<Observation, BrowserError> {
-        let mut obs = ObserveBuilder::new(&self.page).build().await?;
-        // Stamp the observation with the current navigation generation so
-        // resolve_ref can detect stale references after navigation.
-        obs.nav_generation = self
-            .nav_generation
-            .load(std::sync::atomic::Ordering::Relaxed);
-        *self.last_observation.lock().await = Some(obs.clone());
-        Ok(obs)
+        self.observe_with_options(None, false).await
     }
 
     /// Observe with an optional mode filter.
@@ -454,13 +463,36 @@ impl Session {
     /// cursor:pointer divs) so the agent gets only standard interactive
     /// elements. `compact`/`full`/`None` include visual widgets too.
     pub async fn observe_with_mode(&self, mode: Option<&str>) -> Result<Observation, BrowserError> {
-        let mut obs = self.observe().await?;
+        self.observe_with_options(mode, false).await
+    }
+
+    /// Observe with a mode filter and/or the opt-in listener scan.
+    ///
+    /// `listeners: true` runs the `DOMDebugger.getEventListeners` scan that
+    /// promotes elements with programmatically-attached click listeners and
+    /// flags opaque interactive surfaces (delegation containers, canvas). It
+    /// costs up to two CDP round-trips per candidate (capped at 150), so it is
+    /// off by default.
+    pub async fn observe_with_options(
+        &self,
+        mode: Option<&str>,
+        listeners: bool,
+    ) -> Result<Observation, BrowserError> {
+        let mut obs = ObserveBuilder::new(&self.page)
+            .with_listeners(listeners)
+            .build()
+            .await?;
+        // Stamp the observation with the current navigation generation so
+        // resolve_ref can detect stale references after navigation.
+        obs.nav_generation = self
+            .nav_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
         if matches!(mode, Some("interactive-only")) {
             obs.elements.retain(|e| !e.visual);
-            // Re-stamp the cached observation too so a subsequent click on a
-            // surviving ref resolves against the filtered set.
-            *self.last_observation.lock().await = Some(obs.clone());
         }
+        // Cache the (possibly filtered) observation so a subsequent click on a
+        // surviving ref resolves against the same set the agent saw.
+        *self.last_observation.lock().await = Some(obs.clone());
         Ok(obs)
     }
 
@@ -550,6 +582,11 @@ impl Session {
     /// Click a reference or coordinate, returning what was hit and what
     /// observably followed. The click always dispatches, even when the hit
     /// test reports occlusion — the report is advisory.
+    ///
+    /// Uses the session-default effects window (zero unless configured via
+    /// [`Self::with_click_observe_window`]), so by default the report carries
+    /// the hit test but `effects: None`. Opt in per call with
+    /// [`Self::click_with_effects_window`].
     pub async fn click(
         &self,
         target: ClickTarget,
@@ -558,6 +595,26 @@ impl Session {
         modifiers: crate::input::Modifiers,
         hold: Duration,
     ) -> Result<click_report::ClickReport, BrowserError> {
+        self.click_with_effects_window(target, button, count, modifiers, hold, None)
+            .await
+    }
+
+    /// [`Self::click`] with a per-call effects window override.
+    ///
+    /// `effects_window`: `None` uses the session default; `Some(d)` samples
+    /// post-click effects (DOM mutations, network, navigation, focus) for `d`
+    /// — which adds three `Runtime.evaluate` round-trips plus a sleep of `d`
+    /// to this click. `Some(Duration::ZERO)` forces effects off for this call.
+    pub async fn click_with_effects_window(
+        &self,
+        target: ClickTarget,
+        button: MouseButton,
+        count: u32,
+        modifiers: crate::input::Modifiers,
+        hold: Duration,
+        effects_window: Option<Duration>,
+    ) -> Result<click_report::ClickReport, BrowserError> {
+        let effects_window = effects_window.unwrap_or(self.click_observe_window);
         // The target's selector hint (for matched_target), before resolution
         // consumes the target.
         let target_hint: Option<String> = match &target {
@@ -589,7 +646,7 @@ impl Session {
         // dispatch. Like the hit test, this is a diagnostic layer: a CDP
         // failure here degrades to `effects: None` rather than aborting the
         // click.
-        let sample_effects = !self.click_observe_window.is_zero();
+        let sample_effects = !effects_window.is_zero();
         let baseline = if sample_effects {
             let installed = wait::install_mutation_observer(&self.page).await;
             match installed {
@@ -624,7 +681,7 @@ impl Session {
         // during the window.
         let effects = match baseline {
             Some(b) => {
-                tokio::time::sleep(self.click_observe_window).await;
+                tokio::time::sleep(effects_window).await;
                 Some(
                     b.finish_now(
                         &self.page,

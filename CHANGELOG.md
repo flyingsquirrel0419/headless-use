@@ -4,18 +4,66 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-07-27
+
+First stable release. The **core browser-control API** (serve/run/mcp/launch,
+`browser.open`, `observe`, `click`, input methods, `screenshot`, `wait`,
+`console`, `network`, the error model, and the response envelope) is now
+covered by semver stability. The live viewer, trace + replay, stealth, and
+dewiggle remain **experimental** — see README "Stability".
+
+### Changed — release hardening
+
+- **MSRV is now declared honestly: Rust 1.88** (`rust-version` in Cargo.toml,
+  CONTRIBUTING.md). The locked dependency tree (notably `image 0.25.10`)
+  already required it; the previous claim of 1.75 could not build with
+  `--locked`.
+- **Screencast lifecycle is now airtight.** `Screencast` stores its background
+  task handle and a shutdown signal. `stop()` signals, awaits the task (with
+  an abort backstop), and only then issues `Page.stopScreencast`, so the
+  navigation-restart and idle-re-arm paths can never re-issue
+  `Page.startScreencast` after stop; `Drop` signals and aborts. Previously the
+  detached task leaked for the process lifetime and re-armed the cast ~2s
+  after `stop()`.
+- **stdout is protocol-only in every stdio mode.** The one violation —
+  `view --json` printed its viewer banner JSON to stdout ahead of the JSON-RPC
+  loop — now goes to stderr like the human banner always did.
+- **Explicit schema versioning.** Every JSON-RPC response envelope (success
+  and error) carries `schemaVersion: 1`; the `observe` result repeats it
+  inline; trace `metadata.json` gains `formatVersion`. Documented in
+  docs/protocol.md.
+- **The expensive scans are now opt-in** so the default observe/click paths
+  stay light:
+  - `observe` no longer runs the `DOMDebugger.getEventListeners` scan (up to
+    ~300 CDP round-trips on candidate-heavy pages) unless asked:
+    `"listeners": true` over JSON-RPC/MCP, `observe_with_options(mode, true)`
+    in the library. Listener promotion and `opaqueInteractive` flagging are
+    unchanged when enabled.
+  - `click` no longer samples post-click effects (three `Runtime.evaluate`
+    round-trips + a 300 ms sleep) unless asked: `"effects": true` over
+    JSON-RPC/MCP, `click_with_effects_window`/`with_click_observe_window` in
+    the library. The default click report keeps the cheap pre-click hit test;
+    `effects` is `null` unless requested.
+- Error recovery hints no longer reference nonexistent CLI subcommands
+  (`headless-use observe`/`open`/`wait`); they name the JSON-RPC methods.
+- README corrected to match reality: Quick Start pipes into a single `serve`
+  process and shows the real JSON observe result (the old `[@e1] textbox`
+  text block is not produced by any protocol surface); canonical
+  `@g<gen>:eN` references; complete error-code list; full browser-discovery
+  list; Docker examples gain the required `-i`, seccomp option, and a writable
+  output mount; `EXPOSE 0` removed from the Dockerfile.
 
 ### Added — observe listener detection and click reports
 
-- observe: detects programmatically-attached click listeners via CDP
-  `DOMDebugger.getEventListeners`; delegation containers and canvas are
-  flagged `opaqueInteractive` with an explicit "pick coordinates from the
-  screenshot" hint instead of being silently omitted.
-- click: every click now returns a report — pre-click hit test
-  (`hit.element`, `matched_target`, `occluded_by`) and post-click effects
-  within a 300 ms window (`dom_mutations`, `network_requests`, `navigated`,
-  `focus_changed`). All-zero effects = dead click, no screenshot needed.
+- observe (opt-in `listeners`): detects programmatically-attached click
+  listeners via CDP `DOMDebugger.getEventListeners`; delegation containers
+  and canvas are flagged `opaqueInteractive` with an explicit "pick
+  coordinates from the screenshot" hint instead of being silently omitted.
+- click: every click returns a report — pre-click hit test (`hit.element`,
+  `matched_target`, `occluded_by`) always, and post-click effects within a
+  300 ms window (`dom_mutations`, `network_requests`, `navigated`,
+  `focus_changed`) when opted in with `"effects": true`. All-zero effects =
+  dead click, no screenshot needed.
 
 ### Added — stealth mode (`--stealth`)
 

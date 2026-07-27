@@ -75,6 +75,17 @@ async fn serve_rpc_observe_click_type() {
 
     send(&mut stdin, "observe", json!({}), 2);
     let r2 = recv(&mut stdout, to).expect("observe response");
+    // Every response envelope carries the explicit schema version.
+    assert_eq!(
+        r2["schemaVersion"],
+        json!(1),
+        "envelope schemaVersion: {r2}"
+    );
+    assert_eq!(
+        r2["result"]["schemaVersion"],
+        json!(1),
+        "observe result schemaVersion: {r2}"
+    );
     let elements = r2["result"]["elements"].as_array().unwrap();
     assert!(elements.len() >= 4);
 
@@ -83,16 +94,17 @@ async fn serve_rpc_observe_click_type() {
         .find(|e| e["role"] == "textbox" && e["name"].as_str().unwrap().contains("이메일"))
         .map(|e| e["ref_id"].as_u64().unwrap())
         .unwrap();
+    // Effects are opt-in; request them explicitly for this click.
     send(
         &mut stdin,
         "click",
-        json!({ "ref": format!("@e{}", email_ref) }),
+        json!({ "ref": format!("@e{}", email_ref), "effects": true }),
         3,
     );
     let r3 = recv(&mut stdout, to).expect("click response");
     let result = r3.get("result").expect("result");
     assert_eq!(result.get("success"), Some(&json!(true)));
-    // Click response now carries the hit/effects report.
+    // Click response carries the hit report, and effects when opted in.
     assert!(result.get("hit").is_some(), "hit key missing: {result}");
     assert!(
         result.get("effects").is_some(),
@@ -105,6 +117,22 @@ async fn serve_rpc_observe_click_type() {
             .get("dom_mutations")
             .is_some(),
         "effects.dom_mutations missing: {result}"
+    );
+
+    // Default click (no "effects" param): the light path, effects is null.
+    send(
+        &mut stdin,
+        "click",
+        json!({ "ref": format!("@e{}", email_ref) }),
+        30,
+    );
+    let r3b = recv(&mut stdout, to).expect("default click response");
+    let result_b = r3b.get("result").expect("result");
+    assert_eq!(result_b.get("success"), Some(&json!(true)));
+    assert_eq!(
+        result_b.get("effects"),
+        Some(&Value::Null),
+        "default click must not sample effects: {result_b}"
     );
 
     send(

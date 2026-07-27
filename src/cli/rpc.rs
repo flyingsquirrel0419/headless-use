@@ -34,6 +34,7 @@ pub async fn run_stdio(session: Session) -> i32 {
                     id,
                     result: v,
                     version: protocol::PROTOCOL_VERSION.into(),
+                    schema_version: protocol::SCHEMA_VERSION,
                 };
                 protocol::write_response(&mut stdout, &resp);
             }
@@ -64,8 +65,15 @@ pub async fn dispatch(
         }
         "observe" => {
             let mode = params.get("mode").and_then(|v| v.as_str());
-            let obs = session.observe_with_mode(mode).await?;
+            // Opt-in: the programmatic-listener scan costs up to two CDP
+            // round-trips per candidate, so the default observe skips it.
+            let listeners = params
+                .get("listeners")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let obs = session.observe_with_options(mode, listeners).await?;
             let mut resp = json!({
+                "schemaVersion": protocol::SCHEMA_VERSION,
                 "page": obs.page,
                 "elements": obs.elements,
                 "generation": obs.generation,
@@ -175,8 +183,23 @@ pub async fn dispatch(
             let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
             let mods = parse_modifiers_param(params);
             let hold_ms = params.get("hold").and_then(|v| v.as_u64()).unwrap_or(0);
+            // Opt-in: post-click effect sampling adds three Runtime.evaluate
+            // round-trips and a 300 ms wait, so the default click skips it and
+            // returns `effects: null`. The pre-click hit test always runs.
+            let effects = params
+                .get("effects")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let window = effects.then_some(crate::session::DEFAULT_CLICK_EFFECTS_WINDOW);
             let report = session
-                .click(target, button, count, mods, Duration::from_millis(hold_ms))
+                .click_with_effects_window(
+                    target,
+                    button,
+                    count,
+                    mods,
+                    Duration::from_millis(hold_ms),
+                    window,
+                )
                 .await?;
             Ok(json!({ "success": true, "hit": report.hit, "effects": report.effects }))
         }

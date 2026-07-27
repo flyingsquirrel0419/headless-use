@@ -29,8 +29,14 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_observe",
-        description: "Return the page's interactive elements with @eN references and the current generation. Prefer this over screenshots to save tokens. Elements flagged opaqueInteractive are clickable surfaces whose interior targets cannot be enumerated — pick coordinates from a screenshot instead of expecting child refs.",
-        schema: json!({ "type": "object", "properties": {} }),
+        description: "Return the page's interactive elements with @eN references and the current generation. Prefer this over screenshots to save tokens. Set listeners=true to also detect programmatically-attached click listeners (slower; up to two CDP round-trips per candidate element). Elements flagged opaqueInteractive are clickable surfaces whose interior targets cannot be enumerated — pick coordinates from a screenshot instead of expecting child refs.",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "mode": { "type": "string", "enum": ["interactive-only"], "description": "interactive-only excludes visual widgets (canvas, svg, cursor:pointer divs)." },
+                "listeners": { "type": "boolean", "default": false, "description": "Also scan for programmatically-attached click listeners via CDP. Slower; off by default." }
+            }
+        }),
     },
     ToolDef {
        name: "browser_screenshot",
@@ -62,7 +68,7 @@ fn tools() -> Vec<ToolDef> {
     },
     ToolDef {
         name: "browser_click",
-        description: "Click an element. Prefer a generation-bound reference (@g<gen>:e<num>) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click. Returns a hit/effects report: zero effects (no mutations/network/navigation/focus change) means a dead click.",
+        description: "Click an element. Prefer a generation-bound reference (@g<gen>:e<num>) from observe; coordinates {x,y} also accepted. On STALE_REFERENCE error, call browser_observe again. Uses real mouse events, not JS click. Always returns a pre-click hit report; set effects=true to also sample post-click effects (adds ~300 ms): zero effects (no mutations/network/navigation/focus change) means a dead click.",
         schema: json!({
             "type": "object",
             "properties": {
@@ -72,7 +78,8 @@ fn tools() -> Vec<ToolDef> {
                 "button": { "type": "string", "enum": ["left","right","middle","back","forward"], "default": "left" },
                 "count": { "type": "integer", "default": 1, "description": "Click count (1=single, 2=double, 3=triple)." },
                 "modifiers": { "type": "string", "description": "Comma-separated: ctrl,shift,alt,meta." },
-                "hold": { "type": "integer", "description": "Hold duration in ms before release." }
+                "hold": { "type": "integer", "description": "Hold duration in ms before release." },
+                "effects": { "type": "boolean", "default": false, "description": "Sample post-click effects (DOM mutations, network, navigation, focus) for 300 ms. Off by default; when off, effects is null." }
             }
         }),
     },

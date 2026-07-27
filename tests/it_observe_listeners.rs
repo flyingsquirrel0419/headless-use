@@ -1,4 +1,7 @@
 //! Integration tests: listener-detection observe pass + opaque flagging.
+//!
+//! The listener scan is opt-in (`observe_with_options(_, true)`); the default
+//! `observe()` skips it entirely.
 
 mod common;
 
@@ -21,7 +24,7 @@ async fn canvas_is_flagged_opaque() {
     let (_profile, s, srv) = session().await;
     s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    let obs = s.observe().await.unwrap();
+    let obs = s.observe_with_options(None, true).await.unwrap();
     let canvas = obs
         .elements
         .iter()
@@ -39,7 +42,7 @@ async fn direct_listener_div_is_promoted() {
     let (_profile, s, srv) = session().await;
     s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    let obs = s.observe().await.unwrap();
+    let obs = s.observe_with_options(None, true).await.unwrap();
     let refresh = obs
         .elements
         .iter()
@@ -58,7 +61,7 @@ async fn delegation_container_is_opaque() {
     let (_profile, s, srv) = session().await;
     s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    let obs = s.observe().await.unwrap();
+    let obs = s.observe_with_options(None, true).await.unwrap();
     let board = obs
         .elements
         .iter()
@@ -76,7 +79,7 @@ async fn delegated_container_over_real_links_is_not_opaque() {
     let (_profile, s, srv) = session().await;
     s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    let obs = s.observe().await.unwrap();
+    let obs = s.observe_with_options(None, true).await.unwrap();
     let menu = obs
         .elements
         .iter()
@@ -106,11 +109,36 @@ async fn delegated_container_over_real_links_is_not_opaque() {
 }
 
 #[tokio::test]
+async fn default_observe_skips_listener_scan() {
+    let (_profile, s, srv) = session().await;
+    s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
+    s.wait(Default::default()).await.unwrap();
+    // Plain observe: no DOMDebugger scan, so listener-only elements are not
+    // promoted and nothing is flagged truncated.
+    let obs = s.observe().await.unwrap();
+    assert!(
+        !obs.elements.iter().any(|e| e.selector_hint == "#refresh"),
+        "listener-promoted div must not appear without the opt-in scan"
+    );
+    assert!(
+        !obs.elements.iter().any(|e| e.selector_hint == "#board"),
+        "delegation container must not appear without the opt-in scan"
+    );
+    assert!(!obs.truncated, "no scan, no truncation");
+    // Standard interactive elements are still captured.
+    assert!(
+        obs.elements.iter().any(|e| e.tag_name == "canvas"),
+        "canvas is captured by the base pass regardless of the scan"
+    );
+    s.shutdown().await;
+}
+
+#[tokio::test]
 async fn inert_div_is_not_promoted() {
     let (_profile, s, srv) = session().await;
     s.open(&srv.url("delegated-tictactoe.html")).await.unwrap();
     s.wait(Default::default()).await.unwrap();
-    let obs = s.observe().await.unwrap();
+    let obs = s.observe_with_options(None, true).await.unwrap();
     assert!(
         !obs.elements.iter().any(|e| e.selector_hint == "#inert"),
         "no listener: must not be promoted"

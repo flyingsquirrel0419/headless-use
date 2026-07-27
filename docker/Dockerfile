@@ -36,6 +36,7 @@ COPY --from=builder /build/target/release/headless-use /usr/local/bin/headless-u
 
 USER hu
 ENV HEADLESS_USE_BROWSER_PATH=/usr/bin/chromium
-EXPOSE 0
+# No ports are exposed by default: serve/mcp speak stdio. The optional live
+# viewer (`view`) listens on 7780; publish it explicitly with -p if used.
 ENTRYPOINT ["/usr/bin/tini", "--", "headless-use"]
 CMD ["--help"]

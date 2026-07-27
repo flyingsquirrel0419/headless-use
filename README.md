@@ -9,7 +9,7 @@
 use, and debug** the web apps they build. It drives Chrome over the Chrome DevTools
 Protocol (CDP) with **real input events** — not JavaScript `element.click()` — and
 gives agents both screenshot-based "computer use" and token-light semantic
-references (`@e1`, `@e2`, …) to page elements.
+references (`@g1:e1`, `@g1:e2`, …; `@eN` accepted as shorthand) to page elements.
 
 It is a single Rust binary with no Node.js runtime, designed to run on GUI-less
 servers, Docker, and CI without Xvfb.
@@ -40,33 +40,58 @@ cargo build --release
 
 # Diagnose your environment
 ./target/release/headless-use doctor
-
-# Start a long-lived session (JSON-RPC over stdio)
-./target/release/headless-use serve --no-sandbox
 ```
 
-In another terminal, send JSON-RPC requests to the running session:
+`serve` starts a long-lived session speaking newline-delimited JSON-RPC on
+stdin/stdout (stdout carries **only** protocol responses; logs and banners go
+to stderr). Pipe requests into one process — each `serve` owns its own browser:
 
 ```bash
 # Open a page, observe interactive elements, click by reference, type.
 printf '%s\n' \
   '{"id":1,"method":"browser.open","params":{"url":"http://localhost:3000"},"jsonrpc":"2.0"}' \
   '{"id":2,"method":"observe","params":{},"jsonrpc":"2.0"}' \
-  '{"id":3,"method":"click","params":{"ref":"@e1"},"jsonrpc":"2.0"}' \
+  '{"id":3,"method":"click","params":{"ref":"@g1:e1"},"jsonrpc":"2.0"}' \
   '{"id":4,"method":"type","params":{"text":"user@example.com"},"jsonrpc":"2.0"}' \
   '{"id":5,"method":"browser.close","params":{},"jsonrpc":"2.0"}' \
   | ./target/release/headless-use serve --no-sandbox
 ```
 
-`observe` returns a compact list of interactive elements with stable references:
+`observe` returns page metadata plus the interactive elements, each with a
+generation-bound reference (`ref`) that `click`, `hover`, and `screenshot`
+accept as a target:
 
+```json
+{
+  "id": 2,
+  "result": {
+    "schemaVersion": 1,
+    "page": { "url": "http://localhost:3000/", "title": "로그인", "viewport": { "width": 1280, "height": 720 } },
+    "elements": [
+      { "ref": "@g1:e1", "ref_id": 1, "role": "textbox", "name": "이메일" },
+      { "ref": "@g1:e2", "ref_id": 2, "role": "textbox", "name": "비밀번호" },
+      { "ref": "@g1:e3", "ref_id": 3, "role": "button",  "name": "로그인" }
+    ],
+    "generation": 1
+  },
+  "jsonrpc": "2.0",
+  "schemaVersion": 1
+}
 ```
-[@e1] textbox "이메일"
-[@e2] textbox "비밀번호"
-[@e3] button "로그인"
-[@e4] link "회원가입"
-[@e5] checkbox "" [unchecked]
-```
+
+(Elements carry more fields — bounding box, `visible`, `enabled`, `checked`,
+`value`, `selectorHint` — trimmed here for brevity. The bare `@eN` form is
+accepted as shorthand, but only the full `@g<gen>:eN` form detects stale
+references after navigation.)
+
+Two costs are opt-in to keep the default path light:
+
+- `observe` with `"listeners": true` additionally detects
+  programmatically-attached click listeners via CDP (up to two extra CDP
+  round-trips per candidate element).
+- `click` with `"effects": true` samples post-click effects (`dom_mutations`,
+  `network_requests`, `navigated`, `focus_changed`) for 300 ms; without it,
+  `effects` is `null` and only the cheap pre-click hit test runs.
 
 ## One-shot mode
 
@@ -89,7 +114,8 @@ cargo install --path .
 `headless-use` looks for a browser in this order:
 
 1. `HEADLESS_USE_BROWSER_PATH` env var
-2. `chrome-headless-shell`, `chromium`, `google-chrome`, `google-chrome-stable` on `PATH`
+2. `chrome-headless-shell`, `chromium-headless-shell`, `chromium`,
+   `chromium-browser`, `google-chrome`, `google-chrome-stable` on `PATH`
 
 With `--stealth` the order is inverted: the headless shells are tried last,
 because they are missing browser APIs that bot checks read (see
@@ -105,28 +131,59 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 
 ```bash
 docker build -f docker/Dockerfile -t headless-use .
-# The image bundles Chromium. Run one-shot:
-docker run --rm --network host headless-use \
-  run --url http://127.0.0.1:3000 --screenshot /output/page.png
+# The image bundles Chromium and runs as a non-root user with WORKDIR
+# /home/hu. Mount a writable directory for outputs (mkdir -p output first):
+docker run --rm --network host --shm-size=1g \
+  --security-opt seccomp=unconfined \
+  -v "$PWD/output:/home/hu/output" \
+  headless-use \
+  run --url http://127.0.0.1:3000 --screenshot output/page.png --no-sandbox
 ```
 
-> **Sandbox note:** Chromium refuses to run as root without `--no-sandbox`. In
-> Docker CI this is acceptable for isolated builds; for trusted production use
-> prefer running as a non-root user (the shipped Dockerfile does) and keep the
-> sandbox enabled. See [docs/security.md](docs/security.md).
+> **Sandbox note:** Chromium refuses to run as root without `--no-sandbox`;
+> when the process runs as root (common in CI containers), `headless-use`
+> auto-applies it. The shipped Dockerfile runs as a non-root user, where the
+> default Docker seccomp profile can still interfere with Chromium's sandbox —
+> hence `--security-opt seccomp=unconfined` plus `--no-sandbox` above, matching
+> the shipped `docker/docker-compose.yml`. For trusted production use prefer
+> keeping the sandbox on and adjusting seccomp instead. See
+> [docs/security.md](docs/security.md).
+
+## Stability: what v1 guarantees
+
+The **core browser-control API is stable** as of v1.0.0 and follows semver:
+
+- CLI subcommands `serve`, `run`, `mcp`, `launch`, `doctor`, `install-browser`
+- JSON-RPC methods `browser.open`/`page.goto`, `observe`, `click`, `hover`,
+  `mouse.*`, `scroll`, `type`, `insert-text`, `key.*`, `wait`, `screenshot`,
+  `console`, `network`, `evaluate`, `url`, `title`, `browser.close`
+- The corresponding MCP `browser_*` tools
+- The error model (codes are stable strings) and the response envelope
+  (`jsonrpc`, `schemaVersion` — result shapes only gain fields)
+
+**Experimental** — usable today, but shape and defaults may change in minor
+releases, and they are not covered by the v1 stability guarantee:
+
+- **Live viewer** (`view`, `--viewer-*` flags, the MJPEG stream)
+- **Trace + Replay** (`trace.start`/`trace.stop`/`replay`, `actions.jsonl`,
+  `report.html`)
+- **Stealth mode** (`--stealth`) — fingerprint suppression is an arms race by
+  nature
+- **Dewiggle** (`dewiggle`, the `dewiggle` method/tool)
 
 ## Supported features
 
 - **Real input**: `Input.dispatchMouseEvent`, `dispatchKeyEvent`, `insertText`
 - **Mouse**: move, click (left/right/middle/back/forward), double/triple, down/up, hold, hover, wheel scroll, drag (interpolated), drag-path
 - **Keyboard**: down/up/press, chords (`Control+Shift+P`), type, insert-text (CJK/emoji safe), hold, repeat
-- **Observe**: DOM-based interactive-element extraction, semantic `@g<gen>:eN` references (generation-bound for stale detection), bounding boxes, stale-reference detection on any navigation
+- **Observe**: DOM-based interactive-element extraction, semantic `@g<gen>:eN` references (generation-bound for stale detection), bounding boxes, stale-reference detection on any navigation; opt-in listener scan (`"listeners": true`) promotes elements with programmatically-attached click handlers and flags `opaqueInteractive` surfaces
+- **Click reports**: every click returns a pre-click hit test; opt-in (`"effects": true`) post-click effect sampling detects dead clicks
 - **Diagnostics**: console + uncaught errors, network (CDP `Network.*` events — not JS monkey-patching) with secret masking, wait-until-stable (activity-timestamp based, catches sub-poll requests)
-- **Screenshots**: viewport, full-page, element-region (`--element @eN`)
-- **Dewiggle**: reverse per-glyph vertical wobble in animated text CAPTCHAs using **pixels only** — no answer arrays, no DOM text/props. Captures N frames, realigns each column to its neutral baseline, and averages them into a sharpened image plus optional per-glyph crops. `headless-use dewiggle --url ... --out out.png --chars 6`
-- **Stealth**: `--stealth` keeps `--headless=new` but stops it announcing itself — see [Stealth mode](#stealth-mode)
-- **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`, trace + report
-- **Trace + Replay**: `actions.jsonl`, `report.html` (self-contained, screenshots embedded), forced secret redaction at the writer boundary, and `replay` to re-execute a recorded trace
+- **Screenshots**: viewport, full-page, element-region (`--element @g1:e3`)
+- **Dewiggle** *(experimental)*: reverse per-glyph vertical wobble in animated text CAPTCHAs using **pixels only** — no answer arrays, no DOM text/props. Captures N frames, realigns each column to its neutral baseline, and averages them into a sharpened image plus optional per-glyph crops. `headless-use dewiggle --url ... --out out.png --chars 6`
+- **Stealth** *(experimental)*: `--stealth` keeps `--headless=new` but stops it announcing itself — see [Stealth mode](#stealth-mode)
+- **Sessions**: long-lived `serve` (JSON-RPC stdio), one-shot `run`
+- **Trace + Replay** *(experimental)*: `actions.jsonl`, `report.html` (self-contained, screenshots embedded), forced secret redaction at the writer boundary, and `replay` to re-execute a recorded trace
 - **MCP server**: spec-compliant `initialize`/`tools/list`/`tools/call` over stdio
 
 ## MCP server
@@ -176,9 +233,9 @@ headless-use
 ├── launch       Launch a browser and keep it running
 ├── serve        Start a long-lived JSON-RPC session over stdio
 ├── run          Run a one-shot action and exit
-├── dewiggle     Capture an animated text region and reverse per-glyph wobble (pixels only)
-├── view         Serve a live viewer + JSON-RPC session (see below)
-├── replay       Re-execute a recorded trace from a run directory
+├── dewiggle     (experimental) Capture an animated text region and reverse per-glyph wobble (pixels only)
+├── view         (experimental) Serve a live viewer + JSON-RPC session (see below)
+├── replay       (experimental) Re-execute a recorded trace from a run directory
 ├── doctor       Diagnose the environment
 ├── install-browser   Print browser install guidance
 └── mcp          Start the MCP server over stdio
@@ -189,7 +246,7 @@ headless-use
 headless-use dewiggle --url https://example.com/captcha --out out.png --chars 6 --frames 12
 ```
 
-### Stealth mode
+### Stealth mode (experimental)
 
 Sites behind a bot check (Cloudflare Turnstile and friends) hand headless Chrome
 a challenge that headful Chrome walks straight past. `--stealth` closes the gap
@@ -229,7 +286,7 @@ Notes:
   detector. If a site still challenges you, `--compat xvfb` runs a real headful
   browser under Xvfb at roughly double the memory.
 
-### Live viewer
+### Live viewer (experimental)
 
 ```bash
 headless-use view --no-sandbox          # prints http://127.0.0.1:7780/?token=…
@@ -271,10 +328,13 @@ headless-use serve --cursor-motion smooth    # slower, hover-menu friendly
 > shows, including logged-in content. Tunnel it or front it with TLS on an
 > untrusted network. See [docs/security.md](docs/security.md).
 
-`serve` accepts JSON-RPC methods including: `browser.open`, `observe`, `screenshot`,
-`click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`, `scroll`, `mouse.drag`,
-`mouse.drag_path`, `type`, `insert-text`, `dewiggle`, `key.press`, `key.down`, `key.up`, `wait`,
-`console`, `network`, `browser.close`. Add `--json` to launch/run for machine output.
+`serve` accepts JSON-RPC methods including: `browser.open` (alias `page.goto`),
+`observe`, `screenshot`, `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`,
+`scroll`, `mouse.drag`, `mouse.drag_path`, `type`, `insert-text`, `key.press`,
+`key.down`, `key.up`, `wait`, `console`, `network`, `evaluate`, `url`, `title`,
+`browser.close`, plus the experimental `dewiggle`, `trace.start`, `trace.stop`,
+and `replay`. Add `--json` to launch/run for machine output (on `view`, the
+`--json` viewer banner is printed to stderr — stdout stays protocol-only).
 
 ## Error model
 
@@ -286,22 +346,31 @@ Errors are structured so an agent can decide recovery. Example:
   "error": {
     "code": "STALE_REFERENCE",
     "message": "stale reference @e3",
-    "recovery": "Reference @e3 is stale. Run `headless-use observe` again and use the new reference."
-  }
+    "recovery": "Reference @e3 is stale. Run the `observe` method again and use the new reference."
+  },
+  "jsonrpc": "2.0",
+  "schemaVersion": 1
 }
 ```
 
 Error codes: `BROWSER_NOT_FOUND`, `LAUNCH_FAILED`, `CONNECTION_FAILED`,
 `PROTOCOL_ERROR`, `TIMEOUT`, `TARGET_CLOSED`, `ELEMENT_NOT_FOUND`,
-`ELEMENT_NOT_INTERACTABLE`, `STALE_REFERENCE`, `INVALID_INPUT`.
+`ELEMENT_NOT_INTERACTABLE`, `STALE_REFERENCE`, `INVALID_INPUT`,
+`NAVIGATION_BLOCKED`, `NAVIGATION_FAILED`, `EVALUATION_FAILED`,
+`UNEXPECTED_RESPONSE`, `TRACE_ERROR`, `DECODE_ERROR`, `IO_ERROR`,
+`INTERNAL_ERROR`. See [docs/protocol.md](docs/protocol.md).
 
 ## Docker example
 
 ```bash
 docker build -f docker/Dockerfile -t headless-use .
-docker run --rm --network host --shm-size=1g headless-use \
-  serve --no-sandbox
+# -i keeps stdin open: serve reads JSON-RPC from stdin and exits on EOF.
+docker run --rm -i --network host --shm-size=1g \
+  --security-opt seccomp=unconfined \
+  headless-use serve --no-sandbox
 ```
+
+Or use the shipped [`docker/docker-compose.yml`](docker/docker-compose.yml).
 
 ## Limitations
 

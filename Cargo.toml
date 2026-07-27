@@ -1,8 +1,8 @@
 [package]
 name = "headless-use"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 authors = ["headless-use contributors"]
 license = "Apache-2.0"
 description = "Computer use for web development agents, built for headless Linux and CI"

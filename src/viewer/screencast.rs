@@ -75,6 +75,12 @@ pub struct Screencast {
     client: CdpClient,
     /// Page session id for stop().
     session_id: String,
+    /// Shutdown signal for the background task. Once `true`, the task exits
+    /// and never re-issues `Page.startScreencast` again.
+    shutdown_tx: watch::Sender<bool>,
+    /// The background task handle, so stop()/Drop can make sure the task is
+    /// actually gone (not merely signalled).
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Screencast {
@@ -116,7 +122,8 @@ impl Screencast {
         let session_id = page.session_id().to_string();
         let latest_tx_task = latest_tx.clone();
         let start_params = (quality, max_width, max_height);
-        tokio::spawn(async move {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
             // Track the last time we received a frame, so the idle re-arm timer
             // resets whenever frames are actively flowing.
             let mut last_frame = tokio::time::Instant::now();
@@ -132,6 +139,9 @@ impl Screencast {
                 tokio::pin!(idle_timer);
                 tokio::select! {
                     biased;
+                    // Shutdown wins over everything: once stop()/Drop signals,
+                    // exit without re-arming or restarting the cast.
+                    _ = shutdown_rx.changed() => break,
                     ev = events.recv() => {
                         let Some(ev) = ev else { break; };
                         match ev.method.as_str() {
@@ -146,6 +156,12 @@ impl Screencast {
                                     // main-frame swap; restart the cast after
                                     // a short render warm-up.
                                     tokio::time::sleep(Duration::from_millis(150)).await;
+                                    // Shutdown may have been signalled during
+                                    // the warm-up sleep: never restart after
+                                    // stop().
+                                    if *shutdown_rx.borrow() {
+                                        break;
+                                    }
                                     let _ = start_cast_via_client(
                                         &page_client,
                                         &session_id,
@@ -175,11 +191,8 @@ impl Screencast {
                                     )
                                     .await;
                                 let now = tokio::time::Instant::now();
-                                // `map_or`, not `is_none_or`: the latter is
-                                // stable only since 1.82 and this crate's MSRV
-                                // is 1.75.
                                 let due = last_published
-                                    .map_or(true, |t| now.duration_since(t) >= min_interval);
+                                    .is_none_or(|t| now.duration_since(t) >= min_interval);
                                 if due {
                                     if let Some(data_b64) =
                                         params.get("data").and_then(|v| v.as_str())
@@ -221,13 +234,16 @@ impl Screencast {
                     }
                 }
             }
-            // Event channel closed (page/target gone): drop and exit.
+            // Shutdown signalled or event channel closed (page/target gone):
+            // drop and exit.
         });
 
         Ok(Self {
             latest_tx,
             client: page.cdp().clone(),
             session_id: page.session_id().to_string(),
+            shutdown_tx,
+            task: std::sync::Mutex::new(Some(task)),
         })
     }
 
@@ -246,6 +262,12 @@ impl Screencast {
     /// Used by [`Drop`], which cannot await. Prefer [`Self::stop`] where you
     /// can observe the result.
     fn stop_detached(&self) {
+        // Signal first, then abort: the background task must never issue
+        // another Page.startScreencast after this point.
+        let _ = self.shutdown_tx.send(true);
+        if let Some(task) = self.task.lock().ok().and_then(|mut t| t.take()) {
+            task.abort();
+        }
         let client = self.client.clone();
         let session_id = self.session_id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -263,7 +285,25 @@ impl Screencast {
     }
 
     /// Stop the screencast.
+    ///
+    /// Ordering matters: the background task is signalled and awaited *before*
+    /// `Page.stopScreencast` is sent, so its navigation-restart and idle-re-arm
+    /// paths can never re-issue `Page.startScreencast` after this returns.
+    /// Idempotent: a second call is a no-op apart from re-sending the
+    /// (harmless) stop command.
     pub async fn stop(&self) -> Result<(), BrowserError> {
+        let _ = self.shutdown_tx.send(true);
+        let task = self.task.lock().ok().and_then(|mut t| t.take());
+        if let Some(mut task) = task {
+            // The task exits promptly on the shutdown signal; the timeout is a
+            // backstop against a wedged CDP call inside the loop.
+            if tokio::time::timeout(Duration::from_secs(5), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+            }
+        }
         self.client
             .call_session::<Value>(
                 "Page.stopScreencast",
@@ -275,11 +315,20 @@ impl Screencast {
             .map_err(BrowserError::from)?;
         Ok(())
     }
+
+    /// Whether the background task has terminated. Test/diagnostic hook.
+    pub fn task_finished(&self) -> bool {
+        self.task
+            .lock()
+            .map(|t| t.as_ref().is_none_or(|h| h.is_finished()))
+            .unwrap_or(true)
+    }
 }
 
 impl Drop for Screencast {
     /// Best-effort stop, so a dropped handle does not leave Chrome encoding and
-    /// emitting JPEG frames for a stream nobody reads.
+    /// emitting JPEG frames for a stream nobody reads — and cancels the
+    /// background task so it cannot re-arm the cast afterwards.
     fn drop(&mut self) {
         self.stop_detached();
     }

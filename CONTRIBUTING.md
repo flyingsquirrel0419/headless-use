@@ -5,7 +5,7 @@ workflow, code standards, and how to submit changes.
 
 ## Prerequisites
 
-- Rust 1.75+ (stable or nightly)
+- Rust 1.88+ (stable or nightly; matches `rust-version` in `Cargo.toml` — the minimum the locked dependency tree compiles with)
 - A Chromium-based browser on `PATH` (or set `HEADLESS_USE_BROWSER_PATH`)
 - Linux recommended; macOS works for development
 

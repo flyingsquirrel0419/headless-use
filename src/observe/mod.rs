@@ -30,12 +30,28 @@ pub type RefIdValue = u32;
 /// Build a fresh observation of the current page.
 pub struct ObserveBuilder<'a> {
     page: &'a Page,
+    /// Run the (expensive) programmatic-listener scan. Off by default: the
+    /// scan walks the whole DOM in-page and costs up to two CDP round-trips
+    /// per candidate (`Runtime.evaluate` + `DOMDebugger.getEventListeners`,
+    /// capped at 150 candidates).
+    listeners: bool,
 }
 
 impl<'a> ObserveBuilder<'a> {
-    /// Create a builder over `page`.
+    /// Create a builder over `page`. The listener scan is off by default;
+    /// enable it with [`Self::with_listeners`].
     pub fn new(page: &'a Page) -> Self {
-        Self { page }
+        Self {
+            page,
+            listeners: false,
+        }
+    }
+
+    /// Enable/disable the programmatic click-listener scan
+    /// (`DOMDebugger.getEventListeners` per candidate). Opt-in.
+    pub fn with_listeners(mut self, listeners: bool) -> Self {
+        self.listeners = listeners;
+        self
     }
 
     /// Run observe, extracting interactive elements and page metadata.
@@ -50,8 +66,22 @@ impl<'a> ObserveBuilder<'a> {
         // Query interactive elements + their AX info + boxes via one JS pass.
         // This is more reliable than stitching AX tree + DOM separately for the
         // common interactive set, and keeps it token-light.
-        let script = include_str!("extract_elements.js");
-        let result = self.page.evaluate_sync(script).await?;
+        //
+        // The candidate-nomination pass inside the script only runs when the
+        // listener scan was requested; the flag travels as a global set just
+        // before the extraction IIFE evaluates.
+        let script = if self.listeners {
+            format!(
+                "globalThis.__hu_want_listeners__ = true; {}",
+                include_str!("extract_elements.js")
+            )
+        } else {
+            format!(
+                "globalThis.__hu_want_listeners__ = false; {}",
+                include_str!("extract_elements.js")
+            )
+        };
+        let result = self.page.evaluate_sync(&script).await?;
 
         let raw = result
             .value()
@@ -73,17 +103,20 @@ impl<'a> ObserveBuilder<'a> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let candidates: Vec<listeners::Candidate> = raw
-            .get("candidates")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let promoted = listeners::detect(self.page, &candidates).await;
+        let promoted = if self.listeners {
+            let candidates: Vec<listeners::Candidate> = raw
+                .get("candidates")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            listeners::detect(self.page, &candidates).await
+        } else {
+            Vec::new()
+        };
 
         let mut registry = RefRegistry::new();
         for el in elements.iter().chain(promoted.iter()) {

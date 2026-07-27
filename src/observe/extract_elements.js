@@ -186,12 +186,17 @@
   // page JS; the Rust side asks CDP DOMDebugger.getEventListeners per
   // candidate. We only nominate viewport-visible, reasonably-sized elements
   // not already captured, capped to keep the CDP round-trips bounded.
+  //
+  // Opt-in: this pass walks the whole DOM and forces layout per candidate,
+  // and each nominee costs two CDP round-trips on the Rust side. It only
+  // runs when the caller set the flag before evaluating this script.
+  const wantListeners = globalThis.__hu_want_listeners__ === true;
   const CANDIDATE_CAP = 150;
   const vw = window.innerWidth, vh = window.innerHeight;
   const cands = [];
   window.__hu_cand__ = [];
   let truncated = false;
-  const all = document.body ? document.body.querySelectorAll('*') : [];
+  const all = wantListeners && document.body ? document.body.querySelectorAll('*') : [];
   for (const el of all) {
     if (cands.length >= CANDIDATE_CAP) { truncated = true; break; }
     if (pushedEls.has(el)) continue;
