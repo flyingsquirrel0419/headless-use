@@ -104,7 +104,13 @@ async fn idless_promoted_div_is_clickable_via_ref() {
     );
     let target = headless_use::session::Session::click_target_from_ref(&noid.ref_token).unwrap();
     let report = s
-        .click(target, MouseButton::Left, 1, Modifiers::NONE, Duration::ZERO)
+        .click(
+            target,
+            MouseButton::Left,
+            1,
+            Modifiers::NONE,
+            Duration::ZERO,
+        )
         .await
         .expect("ref click on id-less promoted div must resolve, not go stale");
     let effects = report.effects.expect("default window is on");
@@ -128,7 +134,13 @@ async fn occluded_target_is_reported() {
         .expect("underneath button observed");
     let target = headless_use::session::Session::click_target_from_ref(&button.ref_token).unwrap();
     let report = s
-        .click(target, MouseButton::Left, 1, Modifiers::NONE, Duration::ZERO)
+        .click(
+            target,
+            MouseButton::Left,
+            1,
+            Modifiers::NONE,
+            Duration::ZERO,
+        )
         .await
         .unwrap();
     let hit = report.hit.expect("hit test ran");

@@ -27,7 +27,10 @@ async fn canvas_is_flagged_opaque() {
         .iter()
         .find(|e| e.tag_name == "canvas")
         .expect("canvas captured");
-    assert!(canvas.opaque_interactive, "canvas must be opaque_interactive");
+    assert!(
+        canvas.opaque_interactive,
+        "canvas must be opaque_interactive"
+    );
     s.shutdown().await;
 }
 
@@ -42,7 +45,10 @@ async fn direct_listener_div_is_promoted() {
         .iter()
         .find(|e| e.selector_hint == "#refresh")
         .expect("refresh div promoted via getEventListeners");
-    assert!(refresh.visual, "listener-promoted elements are heuristic (visual)");
+    assert!(
+        refresh.visual,
+        "listener-promoted elements are heuristic (visual)"
+    );
     assert!(!refresh.opaque_interactive, "few children: not opaque");
     s.shutdown().await;
 }
@@ -58,7 +64,10 @@ async fn delegation_container_is_opaque() {
         .iter()
         .find(|e| e.selector_hint == "#board")
         .expect("board container found");
-    assert!(board.opaque_interactive, "9 inert children + listener = opaque");
+    assert!(
+        board.opaque_interactive,
+        "9 inert children + listener = opaque"
+    );
     s.shutdown().await;
 }
 
@@ -83,11 +92,16 @@ async fn delegated_container_over_real_links_is_not_opaque() {
         .iter()
         .filter(|e| e.role == "link")
         .filter(|e| {
-            ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india"]
-                .contains(&e.name.as_str())
+            [
+                "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            ]
+            .contains(&e.name.as_str())
         })
         .count();
-    assert_eq!(links, 9, "all nine links enumerated alongside the container");
+    assert_eq!(
+        links, 9,
+        "all nine links enumerated alongside the container"
+    );
     s.shutdown().await;
 }
 

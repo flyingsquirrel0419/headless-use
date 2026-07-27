@@ -435,7 +435,11 @@ mod tests {
             page: crate::observe::PageMeta {
                 url: "u".into(),
                 title: "t".into(),
-                viewport: crate::cdp::Viewport { width: 100, height: 100, device_scale_factor: 1.0 },
+                viewport: crate::cdp::Viewport {
+                    width: 100,
+                    height: 100,
+                    device_scale_factor: 1.0,
+                },
                 scroll_x: 0,
                 scroll_y: 0,
             },

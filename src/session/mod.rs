@@ -626,8 +626,12 @@ impl Session {
             Some(b) => {
                 tokio::time::sleep(self.click_observe_window).await;
                 Some(
-                    b.finish_now(&self.page, &self.network_tracker, self.nav_generation_value())
-                        .await,
+                    b.finish_now(
+                        &self.page,
+                        &self.network_tracker,
+                        self.nav_generation_value(),
+                    )
+                    .await,
                 )
             }
             None => None,

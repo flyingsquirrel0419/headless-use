@@ -100,9 +100,15 @@ pub(crate) async fn hit_test(
     let s = v.value()?.as_str()?.to_string();
     let obj: Value = serde_json::from_str(&s).ok()?;
     Some(HitInfo {
-        element: obj.get("element").and_then(|e| e.as_str()).map(String::from),
+        element: obj
+            .get("element")
+            .and_then(|e| e.as_str())
+            .map(String::from),
         matched_target: obj.get("matched").and_then(|m| m.as_bool()),
-        occluded_by: obj.get("occluded").and_then(|o| o.as_str()).map(String::from),
+        occluded_by: obj
+            .get("occluded")
+            .and_then(|o| o.as_str())
+            .map(String::from),
     })
 }
 

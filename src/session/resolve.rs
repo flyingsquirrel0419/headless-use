@@ -145,10 +145,8 @@ fn tag_for_query(tag: &str) -> String {
         "select" => "select".into(),
         "summary" => "summary".into(),
         other => {
-            let is_valid_tag = !other.is_empty()
-                && other
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-');
+            let is_valid_tag =
+                !other.is_empty() && other.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
             if is_valid_tag {
                 format!("{other}, {GENERIC}")
             } else {

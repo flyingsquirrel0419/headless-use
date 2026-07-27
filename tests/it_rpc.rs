@@ -94,9 +94,16 @@ async fn serve_rpc_observe_click_type() {
     assert_eq!(result.get("success"), Some(&json!(true)));
     // Click response now carries the hit/effects report.
     assert!(result.get("hit").is_some(), "hit key missing: {result}");
-    assert!(result.get("effects").is_some(), "effects key missing: {result}");
     assert!(
-        result.get("effects").unwrap().get("dom_mutations").is_some(),
+        result.get("effects").is_some(),
+        "effects key missing: {result}"
+    );
+    assert!(
+        result
+            .get("effects")
+            .unwrap()
+            .get("dom_mutations")
+            .is_some(),
         "effects.dom_mutations missing: {result}"
     );
 
