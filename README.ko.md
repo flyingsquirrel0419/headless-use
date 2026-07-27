@@ -2,6 +2,10 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+</p>
+
 
 > 웹 개발 에이전트를 위한 컴퓨터 사용, 헤드리스 Linux와 CI에 최적화.
 

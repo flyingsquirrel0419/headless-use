@@ -2,6 +2,10 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+</p>
+
 
 > ウェブ開発エージェントのためのコンピュータ使用、ヘッドレスLinuxとCI向けに構築。
 

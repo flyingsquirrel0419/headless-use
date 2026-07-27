@@ -2,6 +2,10 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+</p>
+
 
 > 面向 Web 开发代理的计算机使用工具，专为无头 Linux 和 CI 环境构建。
 
