@@ -58,6 +58,15 @@ pub struct ElementRef {
     /// exclude these; annotate renders them in a different color.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub visual: bool,
+    /// Interactive surface whose interior targets cannot be enumerated
+    /// (event-delegation container, canvas). The agent should pick
+    /// coordinates from the screenshot instead of expecting child refs.
+    #[serde(
+        rename = "opaqueInteractive",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub opaque_interactive: bool,
     /// The canonical reference token (`@g<gen>:e<num>`), populated after the
     /// registry assigns a generation. Agents should use this token directly for
     /// clicks/hovers so the generation is always carried for stale detection.
@@ -107,10 +116,14 @@ impl ElementRef {
             .as_ref()
             .map(|v| format!(" = {v:?}"))
             .unwrap_or_default();
-        format!(
+        let mut line = format!(
             "[@g{}:e{}] {} {:?}{}{}",
             generation, self.ref_id, self.role, self.name, state, val
-        )
+        );
+        if self.opaque_interactive {
+            line.push_str(" [opaque: receives clicks; interior targets not enumerable — pick coordinates from the screenshot]");
+        }
+        line
     }
 
     /// Render with generation prefix: `[@g12:e3] button "Save"`.
@@ -122,10 +135,14 @@ impl ElementRef {
             (None, true, true) => " [focused]",
             _ => "",
         };
-        format!(
+        let mut line = format!(
             "[@g{}:e{}] {} {:?}{}",
             generation, self.ref_id, self.role, self.name, state
-        )
+        );
+        if self.opaque_interactive {
+            line.push_str(" [opaque: receives clicks; interior targets not enumerable — pick coordinates from the screenshot]");
+        }
+        line
     }
 }
 
@@ -142,6 +159,9 @@ pub struct Observation {
     /// Used by `resolve_ref` to detect stale references after page navigation.
     #[serde(skip)]
     pub nav_generation: u32,
+    /// True when the listener-detection pass hit its candidate cap and some
+    /// candidates were not scanned.
+    pub truncated: bool,
 }
 
 impl Observation {
@@ -163,6 +183,9 @@ impl Observation {
                 s.push_str(&el.to_compact_line(self.generation));
                 s.push('\n');
             }
+        }
+        if self.truncated {
+            s.push_str("Note: listener scan truncated (candidate cap reached); some clickable elements may be missing.\n");
         }
         s
     }
@@ -312,6 +335,7 @@ mod tests {
             value: None,
             selector_hint: String::new(),
             visual: false,
+            opaque_interactive: false,
             ref_token: String::new(),
         });
         r.insert(ElementRef {
@@ -330,6 +354,7 @@ mod tests {
             value: None,
             selector_hint: String::new(),
             visual: false,
+            opaque_interactive: false,
             ref_token: String::new(),
         });
         let v = r.into_sorted();
@@ -356,10 +381,73 @@ mod tests {
             value: None,
             selector_hint: String::new(),
             visual: false,
+            opaque_interactive: false,
             ref_token: String::new(),
         };
         let (cx, cy) = e.center();
         assert_eq!(cx, 120.0);
         assert_eq!(cy, 230.0);
+    }
+
+    #[test]
+    fn opaque_element_renders_hint() {
+        let e = ElementRef {
+            ref_id: 4,
+            role: "div".into(),
+            name: "board".into(),
+            tag_name: "div".into(),
+            x: 0,
+            y: 0,
+            width: 300,
+            height: 300,
+            visible: true,
+            enabled: true,
+            focused: false,
+            checked: None,
+            value: None,
+            selector_hint: "#board".into(),
+            visual: true,
+            opaque_interactive: true,
+            ref_token: String::new(),
+        };
+        let line = e.to_compact_line(7);
+        assert!(
+            line.contains("[opaque: receives clicks; interior targets not enumerable — pick coordinates from the screenshot]"),
+            "line was: {line}"
+        );
+    }
+
+    #[test]
+    fn opaque_deserializes_from_js_key() {
+        let v = serde_json::json!({
+            "role": "div", "name": "b", "tagName": "div",
+            "x": 0, "y": 0, "width": 10, "height": 10,
+            "visible": true, "enabled": true, "focused": false,
+            "checked": null, "opaqueInteractive": true
+        });
+        let el: ElementRef = serde_json::from_value(v).unwrap();
+        assert!(el.opaque_interactive);
+    }
+
+    #[test]
+    fn truncated_observation_notes_it_in_compact() {
+        let obs = Observation {
+            page: crate::observe::PageMeta {
+                url: "u".into(),
+                title: "t".into(),
+                viewport: crate::cdp::Viewport {
+                    width: 100,
+                    height: 100,
+                    device_scale_factor: 1.0,
+                },
+                scroll_x: 0,
+                scroll_y: 0,
+            },
+            elements: vec![],
+            generation: 1,
+            nav_generation: 0,
+            truncated: true,
+        };
+        assert!(obs.to_compact().contains("listener scan truncated"));
     }
 }

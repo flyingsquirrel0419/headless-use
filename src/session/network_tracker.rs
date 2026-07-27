@@ -142,10 +142,13 @@ struct Inner {
     last_activity: Instant,
     /// Whether Network domain was enabled.
     enabled: bool,
+    /// Cumulative count of requests started since the tracker was created.
+    started_total: u64,
 }
 
 impl Inner {
     fn record_started(&mut self, req: TrackedRequest) {
+        self.started_total += 1;
         self.last_activity = Instant::now();
         self.in_flight.insert(req.request_id.clone(), req);
         self.evict_overflow();
@@ -241,6 +244,7 @@ impl NetworkTracker {
                 history: VecDeque::new(),
                 last_activity: Instant::now(),
                 enabled: false,
+                started_total: 0,
             })),
         }
     }
@@ -330,6 +334,12 @@ impl NetworkTracker {
             .values()
             .filter(|r| !r.is_streaming())
             .count() as u64
+    }
+
+    /// Cumulative count of requests started since the tracker was created.
+    /// Sampled before/after a click to report network effects.
+    pub async fn started_count(&self) -> u64 {
+        self.inner.lock().await.started_total
     }
 
     /// Count of in-flight requests including open streams. Diagnostics only.
@@ -525,5 +535,26 @@ mod tests {
             g.mark_finished(&id, Finisher::Completed);
         }
         assert_eq!(tracker.history().await.len(), HISTORY_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn started_count_is_cumulative() {
+        let tracker = NetworkTracker::new();
+        assert_eq!(tracker.started_count().await, 0);
+        for i in 0..3 {
+            let params = json!({
+                "requestId": format!("s{i}"),
+                "request": { "method": "GET", "url": "https://x/y" }
+            });
+            let mut g = tracker.inner.lock().await;
+            let id = format!("s{i}");
+            g.record_started(TrackedRequest::from_started(&params));
+            g.mark_finished(&id, Finisher::Completed);
+        }
+        assert_eq!(
+            tracker.started_count().await,
+            3,
+            "finished requests still count as started"
+        );
     }
 }

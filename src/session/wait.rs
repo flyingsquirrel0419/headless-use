@@ -62,12 +62,14 @@ pub struct WaitResult {
 
 /// Install a MutationObserver that records the last mutation timestamp.
 /// Returns immediately if already installed.
-async fn install_mutation_observer(page: &Page) -> Result<(), BrowserError> {
+pub(crate) async fn install_mutation_observer(page: &Page) -> Result<(), BrowserError> {
     let expr = r#"(() => {
   if (window.__hu_mut_observer__) return 'already';
+  window.__hu_mut_count__ = window.__hu_mut_count__ || 0;
   window.__hu_last_mut__ = Date.now();
-  const obs = new MutationObserver(() => {
+  const obs = new MutationObserver((muts) => {
     window.__hu_last_mut__ = Date.now();
+    window.__hu_mut_count__ += muts.length;
   });
   obs.observe(document.documentElement, {
     childList: true, subtree: true,

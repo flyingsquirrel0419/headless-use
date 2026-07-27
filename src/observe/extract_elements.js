@@ -146,11 +146,14 @@
         if (el.id) return '#' + CSS.escape(el.id);
         return '';
       })(),
+      opaqueInteractive: !!opts.opaque,
     });
+    pushedEls.add(el);
     return true;
   };
 
   const out = [];
+  const pushedEls = new Set();
   const nodes = document.querySelectorAll(INTERACTIVE_SELECTOR);
  let i = 0;
   for (const el of nodes) {
@@ -172,9 +175,52 @@
     const r = el.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) continue;
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    if (pushElement(el, { role, name: visualName(el), visual: true })) {
+    const isOpaqueSurface = el.tagName.toLowerCase() === 'canvas';
+    if (pushElement(el, { role, name: visualName(el), visual: true, opaque: isOpaqueSurface })) {
       if (hint) seen.add(hint);
     }
   }
-  return out;
+
+  // Third pass: listener candidates. Plain elements that MIGHT have
+  // programmatically-attached click listeners. We cannot see listeners from
+  // page JS; the Rust side asks CDP DOMDebugger.getEventListeners per
+  // candidate. We only nominate viewport-visible, reasonably-sized elements
+  // not already captured, capped to keep the CDP round-trips bounded.
+  const CANDIDATE_CAP = 150;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const cands = [];
+  window.__hu_cand__ = [];
+  let truncated = false;
+  const all = document.body ? document.body.querySelectorAll('*') : [];
+  for (const el of all) {
+    if (cands.length >= CANDIDATE_CAP) { truncated = true; break; }
+    if (pushedEls.has(el)) continue;
+    if (el === document.documentElement || el === document.body) continue;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'link' || tag === 'meta') continue;
+    if (el.matches(INTERACTIVE_SELECTOR)) continue; // captured or hidden duplicate
+    if (el.closest(INTERACTIVE_SELECTOR)) continue; // inside a captured element
+    if (isHidden(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    if (r.right < 0 || r.bottom < 0 || r.left > vw || r.top > vh) continue; // outside viewport
+    window.__hu_cand__.push(el);
+    cands.push({
+      index: cands.length,
+      role: el.getAttribute('role') || tag,
+      name: visualName(el),
+      tagName: tag,
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+      childCount: el.childElementCount,
+      // True when the SUBTREE contains no independently interactive element.
+      // A delegated container over inert children is opaque; a container
+      // wrapping real links/buttons is not — its interior IS enumerated.
+      inertInterior: el.querySelector(INTERACTIVE_SELECTOR) === null,
+      selectorHint: el.id ? '#' + CSS.escape(el.id) : '',
+    });
+  }
+  return { elements: out, candidates: cands, truncated };
 })();

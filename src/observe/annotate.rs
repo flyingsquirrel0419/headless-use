@@ -452,6 +452,7 @@ mod tests {
             value: None,
             selector_hint: String::new(),
             visual,
+            opaque_interactive: false,
             ref_token: format!("@g1:e{id}"),
         }
     }

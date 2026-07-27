@@ -311,7 +311,8 @@ async fn dispatch_replay_action(
                     Modifiers::NONE,
                     Duration::from_millis(hold_ms),
                 )
-                .await
+                .await?;
+            Ok(())
         }
         "hover" => {
             let target = replay_target(params)?;

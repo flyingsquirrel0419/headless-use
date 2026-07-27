@@ -13,6 +13,7 @@
 
 pub mod annotate;
 pub mod dewiggle;
+pub(crate) mod listeners;
 pub mod reference;
 
 pub use reference::{
@@ -52,13 +53,14 @@ impl<'a> ObserveBuilder<'a> {
         let script = include_str!("extract_elements.js");
         let result = self.page.evaluate_sync(script).await?;
 
-        let raw_elements = result
+        let raw = result
             .value()
             .cloned()
-            .unwrap_or_else(|| Value::Array(vec![]));
+            .unwrap_or_else(|| Value::Object(Default::default()));
 
-        let elements: Vec<ElementRef> = raw_elements
-            .as_array()
+        let elements: Vec<ElementRef> = raw
+            .get("elements")
+            .and_then(|v| v.as_array())
             .map(|a| {
                 a.iter()
                     .filter_map(|v| serde_json::from_value::<ElementRef>(v.clone()).ok())
@@ -66,8 +68,25 @@ impl<'a> ObserveBuilder<'a> {
             })
             .unwrap_or_default();
 
+        let js_truncated = raw
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let candidates: Vec<listeners::Candidate> = raw
+            .get("candidates")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let promoted = listeners::detect(self.page, &candidates).await;
+
         let mut registry = RefRegistry::new();
-        for el in &elements {
+        for el in elements.iter().chain(promoted.iter()) {
             registry.insert(el.clone());
         }
 
@@ -85,6 +104,7 @@ impl<'a> ObserveBuilder<'a> {
             elements: registry.into_sorted(),
             generation,
             nav_generation: 0,
+            truncated: js_truncated,
         })
     }
 

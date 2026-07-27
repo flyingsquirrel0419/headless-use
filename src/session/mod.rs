@@ -24,6 +24,7 @@
 //! escaping, dewiggle orchestration and clip arithmetic next to `start()`.
 
 pub mod capture;
+pub mod click_report;
 pub mod console;
 pub mod network;
 pub mod network_tracker;
@@ -31,6 +32,7 @@ pub mod resolve;
 pub mod wait;
 
 pub use capture::DewiggleOutput;
+pub use click_report::{ClickEffects, ClickReport, HitInfo};
 pub use console::{ConsoleEntry, ConsoleLevel};
 pub use network::{NetworkEntry, NetworkError};
 
@@ -81,6 +83,8 @@ pub struct Session {
     cursor_motion: crate::input::CursorMotion,
     /// Requests rejected by the host policy at the network layer.
     policy_blocks: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Post-click effect observation window. Zero disables effect sampling.
+    click_observe_window: Duration,
 }
 
 impl Session {
@@ -106,6 +110,7 @@ impl Session {
             policy: Arc::new(tokio::sync::Mutex::new(Policy::default())),
             cursor_motion: crate::input::CursorMotion::default(),
             policy_blocks: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            click_observe_window: Duration::from_millis(300),
         };
         // Start CDP network tracking BEFORE any navigation so we don't miss
         // requestWillBeSent for requests already in flight.
@@ -350,6 +355,13 @@ impl Session {
         self.cursor_motion
     }
 
+    /// Set the post-click effect observation window (default 300 ms).
+    /// `Duration::ZERO` disables effect sampling; the hit test still runs.
+    pub fn with_click_observe_window(mut self, window: Duration) -> Self {
+        self.click_observe_window = window;
+        self
+    }
+
     /// Current cursor position (shared state, persistent across mouse() calls).
     pub async fn cursor_position(&self) -> crate::input::Point {
         *self.cursor_pos.lock().await
@@ -535,7 +547,9 @@ impl Session {
             .await
     }
 
-    /// Click a reference or coordinate.
+    /// Click a reference or coordinate, returning what was hit and what
+    /// observably followed. The click always dispatches, even when the hit
+    /// test reports occlusion — the report is advisory.
     pub async fn click(
         &self,
         target: ClickTarget,
@@ -543,20 +557,86 @@ impl Session {
         count: u32,
         modifiers: crate::input::Modifiers,
         hold: Duration,
-    ) -> Result<(), BrowserError> {
+    ) -> Result<click_report::ClickReport, BrowserError> {
+        // The target's selector hint (for matched_target), before resolution
+        // consumes the target.
+        let target_hint: Option<String> = match &target {
+            ClickTarget::Ref { id, .. } => self
+                .last_observation()
+                .await
+                .and_then(|obs| obs.get(*id).map(|el| el.selector_hint.clone()))
+                .filter(|h| !h.is_empty()),
+            ClickTarget::Point(_) => None,
+        };
         let (x, y) = self.resolve_click_point(target).await?;
         self.record_action(
             "mouse.click",
             json!({ "x": x, "y": y, "button": button.as_cdp(), "count": count }),
         )
         .await;
-        // Walk the cursor over first when smooth motion is on. `Mouse::click`
-        // skips its own move once the cursor is already at the target, so this
-        // does not double-dispatch.
+
+        // Walk the cursor over BEFORE capturing the effects baseline and hit
+        // test. Cursor travel can itself mutate the DOM (hover menus opening,
+        // tooltips, :hover class toggles); sampling the baseline first would
+        // count those en-route mutations as click effects, and the hit test
+        // would miss overlays that only exist once the cursor arrives.
+        // `Mouse::click` below skips its own move once the cursor is already
+        // at the target, so this does not double-dispatch.
         self.travel_to((x, y).into(), modifiers).await?;
+
+        // Effects need the MutationObserver; install is idempotent. Baseline
+        // and hit test run after cursor travel, immediately before the click
+        // dispatch. Like the hit test, this is a diagnostic layer: a CDP
+        // failure here degrades to `effects: None` rather than aborting the
+        // click.
+        let sample_effects = !self.click_observe_window.is_zero();
+        let baseline = if sample_effects {
+            let installed = wait::install_mutation_observer(&self.page).await;
+            match installed {
+                Ok(()) => click_report::EffectsBaseline::capture(
+                    &self.page,
+                    &self.network_tracker,
+                    self.nav_generation_value(),
+                )
+                .await
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "click effects baseline capture failed");
+                })
+                .ok(),
+                Err(e) => {
+                    tracing::debug!(error = %e, "mutation observer install failed");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let hit = click_report::hit_test(&self.page, x, y, target_hint.as_deref()).await;
+
         self.mouse()
             .click((x, y).into(), button, count, modifiers, hold)
-            .await
+            .await?;
+
+        // The window sleep lives here (not inside a `finish` helper) so that
+        // `nav_generation_value()` is read fresh AFTER the wait — an argument
+        // to a method is evaluated before the call, which would otherwise
+        // capture the pre-sleep generation and miss navigations that complete
+        // during the window.
+        let effects = match baseline {
+            Some(b) => {
+                tokio::time::sleep(self.click_observe_window).await;
+                Some(
+                    b.finish_now(
+                        &self.page,
+                        &self.network_tracker,
+                        self.nav_generation_value(),
+                    )
+                    .await,
+                )
+            }
+            None => None,
+        };
+        Ok(click_report::ClickReport { hit, effects })
     }
 
     /// Hover a reference or coordinate.
