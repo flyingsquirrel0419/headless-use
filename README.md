@@ -1,9 +1,9 @@
 # headless-use
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+  <img src="https://raw.githubusercontent.com/flyingsquirrel0419/headless-use/main/docs/assets/demo.gif" alt="headless-use demo" width="720">
 </p>
 
 
@@ -106,7 +106,26 @@ Two costs are opt-in to keep the default path light:
 
 ## Install
 
-### From source
+### Published packages
+
+```bash
+# Linux x86_64 binary through npm (Chrome/Chromium required on the host)
+npm install --global headless-use
+
+# Build and install from crates.io (Chrome/Chromium required on the host)
+cargo install headless-use --locked
+
+# Container with Chromium included
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
+# Mirror: docker pull flyingsquirrel0419/headless-use:1.0.0
+```
+
+Prebuilt archives and SHA-256 checksums are attached to
+[GitHub Releases](https://github.com/flyingsquirrel0419/headless-use/releases).
+GitHub also provides full source zip and tar.gz archives for every release tag.
+Only Linux x86_64 is supported by the prebuilt v1 packages.
+
+### From a checkout
 
 ```bash
 cargo install --path .
@@ -134,13 +153,13 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -f docker/Dockerfile -t headless-use .
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
 # The image bundles Chromium and runs as a non-root user with WORKDIR
 # /home/hu. Mount a writable directory for outputs (mkdir -p output first):
 docker run --rm --network host --shm-size=1g \
   --security-opt seccomp=unconfined \
   -v "$PWD/output:/home/hu/output" \
-  headless-use \
+  ghcr.io/flyingsquirrel0419/headless-use:1.0.0 \
   run --url http://127.0.0.1:3000 --screenshot output/page.png --no-sandbox
 ```
 
@@ -151,7 +170,7 @@ docker run --rm --network host --shm-size=1g \
 > hence `--security-opt seccomp=unconfined` plus `--no-sandbox` above, matching
 > the shipped `docker/docker-compose.yml`. For trusted production use prefer
 > keeping the sandbox on and adjusting seccomp instead. See
-> [SECURITY.md](SECURITY.md).
+> [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md).
 
 ## Stability: what v1 guarantees
 
@@ -330,7 +349,7 @@ headless-use serve --cursor-motion smooth    # slower, hover-menu friendly
 > history and in `Referer` headers, and the stream itself is plain HTTP — anyone
 > who obtains that URL, or who can watch the traffic, sees whatever the page
 > shows, including logged-in content. Tunnel it or front it with TLS on an
-> untrusted network. See [SECURITY.md](SECURITY.md).
+> untrusted network. See [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md).
 
 `serve` accepts JSON-RPC methods including: `browser.open` (alias `page.goto`),
 `observe`, `screenshot`, `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`,
@@ -362,7 +381,7 @@ Error codes: `BROWSER_NOT_FOUND`, `LAUNCH_FAILED`, `CONNECTION_FAILED`,
 `ELEMENT_NOT_INTERACTABLE`, `STALE_REFERENCE`, `INVALID_INPUT`,
 `NAVIGATION_BLOCKED`, `NAVIGATION_FAILED`, `EVALUATION_FAILED`,
 `UNEXPECTED_RESPONSE`, `TRACE_ERROR`, `DECODE_ERROR`, `IO_ERROR`,
-`INTERNAL_ERROR`. See [docs/protocol.md](docs/protocol.md).
+`INTERNAL_ERROR`. See [docs/protocol.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/protocol.md).
 
 ## Docker example
 
@@ -374,7 +393,7 @@ docker run --rm -i --network host --shm-size=1g \
   headless-use serve --no-sandbox
 ```
 
-Or use the shipped [`docker/docker-compose.yml`](docker/docker-compose.yml).
+Or use the shipped [`docker/docker-compose.yml`](https://github.com/flyingsquirrel0419/headless-use/blob/main/docker/docker-compose.yml).
 
 ## Limitations
 
@@ -400,7 +419,7 @@ wrapper.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md). Key points: CDP binds to `127.0.0.1`
+See [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md). Key points: CDP binds to `127.0.0.1`
 only, secrets are masked in traces (including auto-detection of password fields),
 agent-supplied file paths (`trace.start`, `replay`) are confined to the working
 directory, Chrome site isolation stays on, and a host allow/deny policy is
@@ -412,12 +431,13 @@ past a host rule. The live viewer is loopback-only unless you widen it with
 
 ## Community
 
-- [Contributing](CONTRIBUTING.md) — development setup, code standards, PR process
-- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
-- [Security Policy](SECURITY.md) — vulnerability reporting
-- [Changelog](CHANGELOG.md) — release history
+- [Contributing](https://github.com/flyingsquirrel0419/headless-use/blob/main/CONTRIBUTING.md) — development setup, code standards, PR process
+- [Release Guide](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/releasing.md) — publishing, Actions Secrets, provenance
+- [Code of Conduct](https://github.com/flyingsquirrel0419/headless-use/blob/main/CODE_OF_CONDUCT.md) — community standards
+- [Security Policy](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) — vulnerability reporting
+- [Changelog](https://github.com/flyingsquirrel0419/headless-use/blob/main/CHANGELOG.md) — release history
 - [Discussions](https://github.com/flyingsquirrel0419/headless-use/discussions) — questions & ideas
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/flyingsquirrel0419/headless-use/blob/main/LICENSE).

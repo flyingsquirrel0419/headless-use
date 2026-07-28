@@ -1,29 +1,287 @@
 name: Release
+
 on:
   push:
     tags: ["v*.*.*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# [Decision Log]
+# - Intent: Publish one tested commit to every supported distribution channel.
+# - Previous implementation and constraints: The old workflow produced only an
+#   unattested Linux tarball; npm, crates.io, and container users had no package.
+# - Alternatives considered: Independent per-registry workflows and downloading
+#   a binary from an npm install script.
+# - Chosen approach: One tag-gated workflow, a binary embedded in npm, and one
+#   container digest copied to both registries. Registry credentials come only
+#   from GitHub Actions Secrets.
+# - Why this approach over the alternatives: A single version gate prevents
+#   channel drift, embedded npm binaries avoid install-time code downloads, and
+#   one OCI digest makes provenance and partial-release recovery auditable.
+# - Pros, cons, and impact: Releases are consistent and rerunnable, at the cost
+#   of a longer workflow and four external registry credentials.
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGE_NAME: headless-use
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/headless-use
+
 jobs:
-  build:
-    name: Build release binary
+  build-and-test:
+    name: Test and package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Package
-        run: |
-          mkdir -p dist
-          cp target/release/headless-use dist/
-          cp README.md LICENSE dist/ 2>/dev/null || true
-          tar czf headless-use-${{ github.ref_name }}-x86_64-linux.tar.gz -C dist .
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
-          name: headless-use-${{ github.ref_name }}-x86_64-linux
-          path: headless-use-*.tar.gz
-      - name: Release
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium fonts-noto-cjk
+          echo "HEADLESS_USE_BROWSER_PATH=$(command -v chromium)" >> "$GITHUB_ENV"
+      - name: Validate release version
+        run: ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace -- --test-threads=2
+      - name: Verify crates.io package
+        run: |
+          ./scripts/check-crate-package.sh
+          cargo publish --locked --dry-run
+      - name: Build Debian-compatible release binary
+        run: |
+          docker build --target builder --file docker/Dockerfile \
+            --tag headless-use:release-builder .
+          builder_id="$(docker create headless-use:release-builder)"
+          trap 'docker rm -f "$builder_id" >/dev/null 2>&1 || true' EXIT
+          mkdir -p target/release-dist
+          docker cp \
+            "$builder_id:/build/target/release/headless-use" \
+            target/release-dist/headless-use
+          chmod 0755 target/release-dist/headless-use
+      - name: Smoke-test binary
+        run: |
+          target/release-dist/headless-use --version
+          target/release-dist/headless-use doctor
+          target/release-dist/headless-use run \
+            --url https://example.com \
+            --screenshot /tmp/headless-use-smoke.png \
+            --no-sandbox
+          test -s /tmp/headless-use-smoke.png
+      - name: Package binary and npm distribution
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          archive="headless-use-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p dist/archive dist/npm/bin release
+          install -m 0755 target/release-dist/headless-use dist/archive/headless-use
+          install -m 0644 README.md LICENSE dist/archive/
+          tar -C dist/archive -czf "release/${archive}" .
+          install -m 0755 target/release-dist/headless-use dist/npm/bin/headless-use
+          install -m 0644 npm/package.json npm/README.md LICENSE dist/npm/
+          npm pack ./dist/npm --pack-destination release
+          mv "release/headless-use-${version}.tgz" "release/headless-use-npm-${version}.tgz"
+          (cd release && sha256sum -- ./*.tar.gz ./*.tgz > checksums.txt)
+      - name: Verify downloadable package contents
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          archive="release/headless-use-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          npm_archive="release/headless-use-npm-${version}.tgz"
+          printf '%s\n' ./ ./LICENSE ./README.md ./headless-use | sort > /tmp/expected-archive
+          tar -tzf "$archive" | sort > /tmp/actual-archive
+          diff -u /tmp/expected-archive /tmp/actual-archive
+          printf '%s\n' \
+            package/LICENSE \
+            package/README.md \
+            package/bin/headless-use \
+            package/package.json | sort > /tmp/expected-npm
+          tar -tzf "$npm_archive" | sort > /tmp/actual-npm
+          diff -u /tmp/expected-npm /tmp/actual-npm
+      - name: Test packed npm CLI
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p /tmp/headless-use-npm
+          npm install --prefix /tmp/headless-use-npm \
+            "./release/headless-use-npm-${VERSION#v}.tgz"
+          /tmp/headless-use-npm/node_modules/.bin/headless-use --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: release/
+          if-no-files-found: error
+
+  container-smoke:
+    name: Test container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container
+        run: |
+          docker build \
+            --file docker/Dockerfile \
+            --build-arg VERSION="${GITHUB_REF_NAME#v}" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --tag headless-use:release-test .
+      - name: Smoke-test container
+        run: |
+          docker run --rm headless-use:release-test --version
+          docker run --rm \
+            --security-opt seccomp=unconfined \
+            headless-use:release-test \
+            run --url https://example.com --screenshot /tmp/smoke.png --no-sandbox
+
+  publish:
+    name: Publish all channels
+    needs: [build-and-test, container-smoke]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: release
+      - name: Validate required Actions Secrets
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          for name in NPM_TOKEN CARGO_REGISTRY_TOKEN DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "error: required GitHub Actions Secret $name is not configured" >&2
+              exit 1
+            fi
+          done
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish or recover container image
+        id: container
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          version="${VERSION_TAG#v}"
+          ghcr_ref="${GHCR_IMAGE}:${version}"
+          docker_ref="docker.io/${DOCKERHUB_USERNAME}/headless-use:${version}"
+          ghcr_digest="$(docker buildx imagetools inspect "$ghcr_ref" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+          docker_digest="$(docker buildx imagetools inspect "$docker_ref" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+
+          if [[ -z "$ghcr_digest" && -z "$docker_digest" ]]; then
+            docker buildx build \
+              --file docker/Dockerfile \
+              --platform linux/amd64 \
+              --build-arg VERSION="$version" \
+              --build-arg VCS_REF="$GITHUB_SHA" \
+              --provenance mode=max \
+              --sbom true \
+              --tag "$ghcr_ref" \
+              --tag "${GHCR_IMAGE}:latest" \
+              --tag "$docker_ref" \
+              --tag "docker.io/${DOCKERHUB_USERNAME}/headless-use:latest" \
+              --push .
+          elif [[ -n "$ghcr_digest" && -z "$docker_digest" ]]; then
+            docker buildx imagetools create --tag "$docker_ref" "$ghcr_ref"
+            docker buildx imagetools create \
+              --tag "docker.io/${DOCKERHUB_USERNAME}/headless-use:latest" "$ghcr_ref"
+          elif [[ -z "$ghcr_digest" && -n "$docker_digest" ]]; then
+            docker buildx imagetools create --tag "$ghcr_ref" "$docker_ref"
+            docker buildx imagetools create --tag "${GHCR_IMAGE}:latest" "$docker_ref"
+          elif [[ "$ghcr_digest" != "$docker_digest" ]]; then
+            echo "error: existing registry digests disagree: $ghcr_digest != $docker_digest" >&2
+            exit 1
+          fi
+
+          digest="$(docker buildx imagetools inspect "$ghcr_ref" --format '{{.Manifest.Digest}}')"
+          mirror_digest="$(docker buildx imagetools inspect "$docker_ref" --format '{{.Manifest.Digest}}')"
+          if [[ "$digest" != "$mirror_digest" ]]; then
+            echo "error: published registry digests disagree: $digest != $mirror_digest" >&2
+            exit 1
+          fi
+          docker buildx imagetools create --tag "${GHCR_IMAGE}:latest" "$ghcr_ref"
+          docker buildx imagetools create \
+            --tag "docker.io/${DOCKERHUB_USERNAME}/headless-use:latest" "$ghcr_ref"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest GHCR image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.container.outputs.digest }}
+          push-to-registry: true
+      - name: Attest Docker Hub image
+        uses: actions/attest@v4
+        with:
+          subject-name: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/headless-use
+          subject-digest: ${{ steps.container.outputs.digest }}
+          push-to-registry: true
+      - name: Publish npm package if absent
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          version="${VERSION_TAG#v}"
+          if npm view "headless-use@${version}" version >/dev/null 2>&1; then
+            echo "npm headless-use@${version} already exists; skipping"
+          else
+            npm publish "release/headless-use-npm-${version}.tgz" \
+              --access public --provenance
+          fi
+      - name: Publish crates.io package if absent
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          version="${VERSION_TAG#v}"
+          if curl --fail --silent --show-error \
+            -A "headless-use-release-workflow" \
+            "https://crates.io/api/v1/crates/headless-use/${version}" >/dev/null 2>&1; then
+            echo "crates.io headless-use@${version} already exists; skipping"
+          else
+            cargo publish --locked
+          fi
+      - name: Attest downloadable packages
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: headless-use-*.tar.gz
+          files: release/*
+          generate_release_notes: true

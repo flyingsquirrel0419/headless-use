@@ -73,6 +73,12 @@ fix: resolve Korean element click injection
 docs: add Japanese README
 ```
 
+## Releases
+
+Maintainer release prerequisites, required GitHub Actions Secrets, version
+gates, and provenance verification are documented in
+[`docs/releasing.md`](docs/releasing.md).
+
 ## Reporting issues
 
 Use the GitHub issue templates. For security vulnerabilities, see

@@ -7,9 +7,31 @@ authors = ["headless-use contributors"]
 license = "Apache-2.0"
 description = "Computer use for web development agents, built for headless Linux and CI"
 repository = "https://github.com/flyingsquirrel0419/headless-use"
+homepage = "https://github.com/flyingsquirrel0419/headless-use"
+readme = "README.md"
 keywords = ["browser-automation", "cdp", "computer-use", "headless", "mcp"]
 categories = ["command-line-utilities", "development-tools::testing"]
 build = "build.rs"
+
+# [Decision Log]
+# - Intent: Ship only files required to build and understand the crates.io package.
+# - Previous implementation and constraints: Cargo's default package discovery included tests,
+#   fixtures, workflows, Docker files, translated READMEs, and maintainer documentation.
+# - Alternatives considered: A growing `exclude` list or leaving development files in the crate.
+# - Chosen approach: Use a small positive `include` allowlist for source, build metadata, README,
+#   and license files.
+# - Why this approach over the alternatives: New repository files stay private by default and
+#   cannot silently inflate a release.
+# - Pros, cons, and impact: The crate is smaller and cleaner; new build-time assets must be added
+#   deliberately if they are ever placed outside `src/`.
+include = [
+    "/src/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+]
 
 [lib]
 name = "headless_use"

@@ -1,9 +1,9 @@
 # headless-use
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+  <img src="https://raw.githubusercontent.com/flyingsquirrel0419/headless-use/main/docs/assets/demo.gif" alt="headless-use demo" width="720">
 </p>
 
 
@@ -102,7 +102,26 @@ printf '%s\n' \
 
 ## 安装
 
-### 从源码
+### 已发布的软件包
+
+```bash
+# Linux x86_64 二进制文件（主机需要 Chrome/Chromium）
+npm install --global headless-use
+
+# 从 crates.io 构建安装（主机需要 Chrome/Chromium）
+cargo install headless-use --locked
+
+# 包含 Chromium 的容器
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
+# 镜像：docker pull flyingsquirrel0419/headless-use:1.0.0
+```
+
+预构建压缩包和 SHA-256 校验和会附加到
+[GitHub Releases](https://github.com/flyingsquirrel0419/headless-use/releases)。
+GitHub 还会自动提供每个发布标签的完整源代码 zip 和 tar.gz。
+v1 预构建软件包仅支持 Linux x86_64。
+
+### 从检出的源码
 
 ```bash
 cargo install --path .
@@ -129,13 +148,13 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -f docker/Dockerfile -t headless-use .
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
 # 镜像捆绑 Chromium，以非 root 用户运行，WORKDIR 为 /home/hu。
 # 挂载一个可写目录用于输出（先 mkdir -p output）：
 docker run --rm --network host --shm-size=1g \
   --security-opt seccomp=unconfined \
   -v "$PWD/output:/home/hu/output" \
-  headless-use \
+  ghcr.io/flyingsquirrel0419/headless-use:1.0.0 \
   run --url http://127.0.0.1:3000 --screenshot output/page.png --no-sandbox
 ```
 
@@ -145,7 +164,7 @@ docker run --rm --network host --shm-size=1g \
 > Chromium 沙箱 — 因此上面的示例与随附的 `docker/docker-compose.yml` 一致，
 > 使用 `--security-opt seccomp=unconfined` 加 `--no-sandbox`。在可信的生产
 > 环境中，建议保持沙箱开启并调整 seccomp。见
-> [SECURITY.md](SECURITY.md)。
+> [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)。
 
 ## 稳定性：v1 保证什么
 
@@ -314,7 +333,7 @@ headless-use serve --cursor-motion smooth    # 较慢，hover 菜单友好
 > 开放到网络，此时令牌为必需。令牌是 URL 中的 bearer 凭证，会留在 shell 和
 > 浏览器历史以及 `Referer` 头中，且流本身是明文 HTTP — 任何拿到该 URL 或能
 > 监听流量的人都能看到页面显示的一切，包括已登录内容。在不可信网络上请使用
-> 隧道或在前面加 TLS。见 [SECURITY.md](SECURITY.md)。
+> 隧道或在前面加 TLS。见 [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)。
 
 `serve` 接受的 JSON-RPC 方法包括：`browser.open`（别名 `page.goto`）、
 `observe`、`screenshot`、`click`、`hover`、`mouse.move`、`mouse.down`、
@@ -347,7 +366,7 @@ headless-use serve --cursor-motion smooth    # 较慢，hover 菜单友好
 `ELEMENT_NOT_INTERACTABLE`、`STALE_REFERENCE`、`INVALID_INPUT`、
 `NAVIGATION_BLOCKED`、`NAVIGATION_FAILED`、`EVALUATION_FAILED`、
 `UNEXPECTED_RESPONSE`、`TRACE_ERROR`、`DECODE_ERROR`、`IO_ERROR`、
-`INTERNAL_ERROR`。见 [docs/protocol.md](docs/protocol.md)。
+`INTERNAL_ERROR`。见 [docs/protocol.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/protocol.md)。
 
 ## Docker 示例
 
@@ -359,7 +378,7 @@ docker run --rm -i --network host --shm-size=1g \
   headless-use serve --no-sandbox
 ```
 
-或使用随附的 [`docker/docker-compose.yml`](docker/docker-compose.yml)。
+或使用随附的 [`docker/docker-compose.yml`](https://github.com/flyingsquirrel0419/headless-use/blob/main/docker/docker-compose.yml)。
 
 ## 限制
 
@@ -384,7 +403,7 @@ API（引用 + observe + 结构化错误）。它可以与 Playwright 并行用�
 
 ## 安全
 
-见 [SECURITY.md](SECURITY.md)。要点：CDP 仅绑定 `127.0.0.1`，trace
+见 [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)。要点：CDP 仅绑定 `127.0.0.1`，trace
 中脱敏密钥（包括密码字段自动检测），代理提供的文件路径（`trace.start`、
 `replay`）被限制在工作目录内，Chrome 站点隔离保持开启，主机 allow/deny 策略
 在导航时强制执行（`--allow-host`/`--deny-host`）— 同时导航被限制为
@@ -394,12 +413,13 @@ API（引用 + observe + 结构化错误）。它可以与 Playwright 并行用�
 
 ## 社区
 
-- [Contributing](CONTRIBUTING.md) — 开发环境、代码标准、PR 流程
-- [Code of Conduct](CODE_OF_CONDUCT.md) — 社区标准
-- [Security Policy](SECURITY.md) — 漏洞报告
-- [Changelog](CHANGELOG.md) — 发布历史
+- [Contributing](https://github.com/flyingsquirrel0419/headless-use/blob/main/CONTRIBUTING.md) — 开发环境、代码标准、PR 流程
+- [Release Guide](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/releasing.md) — 发布、Actions Secrets、构建证明
+- [Code of Conduct](https://github.com/flyingsquirrel0419/headless-use/blob/main/CODE_OF_CONDUCT.md) — 社区标准
+- [Security Policy](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) — 漏洞报告
+- [Changelog](https://github.com/flyingsquirrel0419/headless-use/blob/main/CHANGELOG.md) — 发布历史
 - [Discussions](https://github.com/flyingsquirrel0419/headless-use/discussions) — 问题与想法
 
 ## 许可证
 
-Apache License, Version 2.0。见 [LICENSE](LICENSE)。
+Apache License, Version 2.0。见 [LICENSE](https://github.com/flyingsquirrel0419/headless-use/blob/main/LICENSE)。

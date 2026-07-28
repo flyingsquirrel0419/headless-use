@@ -14,6 +14,16 @@ dewiggle remain **experimental** — see README "Stability".
 
 ### Changed — release hardening
 
+- **One tag now publishes every supported distribution.** GitHub Releases,
+  npm, crates.io, Docker Hub, and GHCR share one validated SemVer; downloadable
+  artifacts have SHA-256 checksums and GitHub build attestations, while both
+  container registries point at the same attested OCI digest. All external
+  registry credentials are read exclusively from GitHub Actions Secrets.
+- **Published packages now enforce minimal file allowlists.** The crates.io
+  package excludes tests, fixtures, workflows, Docker assets, translations,
+  and maintainer docs; release checks also reject unexpected files in the
+  custom GitHub binary and npm archives. GitHub's automatic source zip/tarball
+  still contains the complete tagged repository.
 - **MSRV is now declared honestly: Rust 1.88** (`rust-version` in Cargo.toml,
   CONTRIBUTING.md). The locked dependency tree (notably `image 0.25.10`)
   already required it; the previous claim of 1.75 could not build with

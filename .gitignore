@@ -1,6 +1,8 @@
 /target
 /.headless-use/
 /output/
+/npm/bin/
+/npm/LICENSE
 *.png
 *.jpg
 !tests/fixtures/**/*.png

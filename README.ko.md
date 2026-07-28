@@ -1,9 +1,9 @@
 # headless-use
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+  <img src="https://raw.githubusercontent.com/flyingsquirrel0419/headless-use/main/docs/assets/demo.gif" alt="headless-use demo" width="720">
 </p>
 
 
@@ -107,7 +107,26 @@ generation 결합 참조(`ref`)는 `click`, `hover`, `screenshot`의 대상으�
 
 ## 설치
 
-### 소스에서
+### 배포 패키지
+
+```bash
+# Linux x86_64 바이너리 (호스트에 Chrome/Chromium 필요)
+npm install --global headless-use
+
+# crates.io 소스 빌드 설치 (호스트에 Chrome/Chromium 필요)
+cargo install headless-use --locked
+
+# Chromium 포함 컨테이너
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
+# 미러: docker pull flyingsquirrel0419/headless-use:1.0.0
+```
+
+미리 빌드된 압축 파일과 SHA-256 체크섬은
+[GitHub Releases](https://github.com/flyingsquirrel0419/headless-use/releases)에
+첨부됩니다. GitHub는 각 릴리스 태그의 전체 소스 zip과 tar.gz도 자동으로
+제공합니다. v1 사전 빌드 패키지는 Linux x86_64만 지원합니다.
+
+### 체크아웃한 소스에서
 
 ```bash
 cargo install --path .
@@ -135,13 +154,13 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -f docker/Dockerfile -t headless-use .
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
 # 이미지는 Chromium을 포함하며 non-root 사용자로, WORKDIR /home/hu에서
 # 실행됩니다. 출력용 쓰기 가능 디렉터리를 마운트하세요 (먼저 mkdir -p output):
 docker run --rm --network host --shm-size=1g \
   --security-opt seccomp=unconfined \
   -v "$PWD/output:/home/hu/output" \
-  headless-use \
+  ghcr.io/flyingsquirrel0419/headless-use:1.0.0 \
   run --url http://127.0.0.1:3000 --screenshot output/page.png --no-sandbox
 ```
 
@@ -152,7 +171,7 @@ docker run --rm --network host --shm-size=1g \
 > 있습니다 — 그래서 위 예제는 제공되는 `docker/docker-compose.yml`과
 > 동일하게 `--security-opt seccomp=unconfined` + `--no-sandbox`를 씁니다.
 > 신뢰할 수 있는 프로덕션에서는 샌드박스를 켜두고 seccomp을 조정하는 쪽을
-> 권장합니다. [SECURITY.md](SECURITY.md) 참조.
+> 권장합니다. [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) 참조.
 
 ## 안정성: v1이 보장하는 것
 
@@ -329,7 +348,7 @@ headless-use serve --cursor-motion smooth    # 느리지만 hover 메뉴 친화�
 > 헤더에 남고, 스트림 자체는 평문 HTTP입니다 — 그 URL을 얻거나 트래픽을 볼
 > 수 있는 누구든 로그인된 콘텐츠를 포함해 페이지가 보여주는 모든 것을
 > 봅니다. 신뢰할 수 없는 네트워크에서는 터널링하거나 TLS를 앞에 두세요.
-> [SECURITY.md](SECURITY.md) 참조.
+> [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) 참조.
 
 `serve`가 받는 JSON-RPC 메서드: `browser.open`(별칭 `page.goto`), `observe`,
 `screenshot`, `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`,
@@ -361,7 +380,7 @@ headless-use serve --cursor-motion smooth    # 느리지만 hover 메뉴 친화�
 `ELEMENT_NOT_INTERACTABLE`, `STALE_REFERENCE`, `INVALID_INPUT`,
 `NAVIGATION_BLOCKED`, `NAVIGATION_FAILED`, `EVALUATION_FAILED`,
 `UNEXPECTED_RESPONSE`, `TRACE_ERROR`, `DECODE_ERROR`, `IO_ERROR`,
-`INTERNAL_ERROR`. [docs/protocol.md](docs/protocol.md) 참조.
+`INTERNAL_ERROR`. [docs/protocol.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/protocol.md) 참조.
 
 ## Docker 예제
 
@@ -373,7 +392,7 @@ docker run --rm -i --network host --shm-size=1g \
   headless-use serve --no-sandbox
 ```
 
-또는 제공되는 [`docker/docker-compose.yml`](docker/docker-compose.yml)을
+또는 제공되는 [`docker/docker-compose.yml`](https://github.com/flyingsquirrel0419/headless-use/blob/main/docker/docker-compose.yml)을
 사용하세요.
 
 ## 제한사항
@@ -400,7 +419,7 @@ docker run --rm -i --network host --shm-size=1g \
 
 ## 보안
 
-[SECURITY.md](SECURITY.md) 참조. 핵심: CDP는 `127.0.0.1`에만
+[SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) 참조. 핵심: CDP는 `127.0.0.1`에만
 바인드, 트레이스에서 시크릿 마스킹(비밀번호 필드 자동 감지 포함),
 에이전트가 제공한 파일 경로(`trace.start`, `replay`)는 작업 디렉터리로 제한,
 Chrome 사이트 격리 유지, 호스트 allow/deny 정책이 내비게이션에 강제됨
@@ -412,12 +431,13 @@ loopback에서는 토큰이 허용되지만 요구되지 않습니다.
 
 ## 커뮤니티
 
-- [Contributing](CONTRIBUTING.md) — 개발 환경, 코드 표준, PR 프로세스
-- [Code of Conduct](CODE_OF_CONDUCT.md) — 커뮤니티 표준
-- [Security Policy](SECURITY.md) — 취약점 보고
-- [Changelog](CHANGELOG.md) — 릴리스 이력
+- [Contributing](https://github.com/flyingsquirrel0419/headless-use/blob/main/CONTRIBUTING.md) — 개발 환경, 코드 표준, PR 프로세스
+- [Release Guide](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/releasing.md) — 배포, Actions Secrets, 빌드 증명
+- [Code of Conduct](https://github.com/flyingsquirrel0419/headless-use/blob/main/CODE_OF_CONDUCT.md) — 커뮤니티 표준
+- [Security Policy](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) — 취약점 보고
+- [Changelog](https://github.com/flyingsquirrel0419/headless-use/blob/main/CHANGELOG.md) — 릴리스 이력
 - [Discussions](https://github.com/flyingsquirrel0419/headless-use/discussions) — 질문과 아이디어
 
 ## 라이선스
 
-Apache License, Version 2.0. [LICENSE](LICENSE) 참조.
+Apache License, Version 2.0. [LICENSE](https://github.com/flyingsquirrel0419/headless-use/blob/main/LICENSE) 참조.

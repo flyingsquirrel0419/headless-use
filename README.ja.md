@@ -1,9 +1,9 @@
 # headless-use
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [中文](README.zh.md)
+[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="headless-use demo" width="720">
+  <img src="https://raw.githubusercontent.com/flyingsquirrel0419/headless-use/main/docs/assets/demo.gif" alt="headless-use demo" width="720">
 </p>
 
 
@@ -107,7 +107,26 @@ generation結合参照（`ref`）は`click`、`hover`、`screenshot`のターゲ
 
 ## インストール
 
-### ソースから
+### 公開パッケージ
+
+```bash
+# Linux x86_64バイナリ（ホストにChrome/Chromiumが必要）
+npm install --global headless-use
+
+# crates.ioからソースをビルド（ホストにChrome/Chromiumが必要）
+cargo install headless-use --locked
+
+# Chromium同梱コンテナ
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
+# ミラー: docker pull flyingsquirrel0419/headless-use:1.0.0
+```
+
+ビルド済みアーカイブとSHA-256チェックサムは
+[GitHub Releases](https://github.com/flyingsquirrel0419/headless-use/releases)に
+添付されます。GitHubは各リリースタグの完全なソースzipとtar.gzも自動で
+提供します。v1のビルド済みパッケージはLinux x86_64のみ対応します。
+
+### チェックアウトしたソースから
 
 ```bash
 cargo install --path .
@@ -135,14 +154,14 @@ headless-use launch --browser-path /opt/chrome-headless-shell
 ### Docker
 
 ```bash
-docker build -f docker/Dockerfile -t headless-use .
+docker pull ghcr.io/flyingsquirrel0419/headless-use:1.0.0
 # イメージはChromiumを同梱し、non-rootユーザーでWORKDIR /home/huで実行
 # されます。出力用に書き込み可能なディレクトリをマウントしてください
 # （先に mkdir -p output）：
 docker run --rm --network host --shm-size=1g \
   --security-opt seccomp=unconfined \
   -v "$PWD/output:/home/hu/output" \
-  headless-use \
+  ghcr.io/flyingsquirrel0419/headless-use:1.0.0 \
   run --url http://127.0.0.1:3000 --screenshot output/page.png --no-sandbox
 ```
 
@@ -153,7 +172,7 @@ docker run --rm --network host --shm-size=1g \
 > ます — そのため上記例は同梱の`docker/docker-compose.yml`と同じく
 > `--security-opt seccomp=unconfined` + `--no-sandbox`を使います。信頼できる
 > 本番環境ではサンドボックスを有効のままseccompを調整する方を推奨します。
-> [SECURITY.md](SECURITY.md)参照。
+> [SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)参照。
 
 ## 安定性：v1が保証するもの
 
@@ -330,7 +349,7 @@ headless-use serve --cursor-motion smooth    # 遅いがhoverメニュー向き
 > ヘッダーに残り、ストリーム自体は平文HTTPです — そのURLを入手した者、
 > あるいはトラフィックを見られる者は、ログイン済みコンテンツを含めページが
 > 表示するすべてを見られます。信頼できないネットワークではトンネルするか
-> TLSを前段に置いてください。[SECURITY.md](SECURITY.md)参照。
+> TLSを前段に置いてください。[SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)参照。
 
 `serve`が受け付けるJSON-RPCメソッド：`browser.open`（別名`page.goto`）、
 `observe`、`screenshot`、`click`、`hover`、`mouse.move`、`mouse.down`、
@@ -363,7 +382,7 @@ headless-use serve --cursor-motion smooth    # 遅いがhoverメニュー向き
 `ELEMENT_NOT_INTERACTABLE`、`STALE_REFERENCE`、`INVALID_INPUT`、
 `NAVIGATION_BLOCKED`、`NAVIGATION_FAILED`、`EVALUATION_FAILED`、
 `UNEXPECTED_RESPONSE`、`TRACE_ERROR`、`DECODE_ERROR`、`IO_ERROR`、
-`INTERNAL_ERROR`。[docs/protocol.md](docs/protocol.md)参照。
+`INTERNAL_ERROR`。[docs/protocol.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/protocol.md)参照。
 
 ## Docker例
 
@@ -375,7 +394,7 @@ docker run --rm -i --network host --shm-size=1g \
   headless-use serve --no-sandbox
 ```
 
-または同梱の[`docker/docker-compose.yml`](docker/docker-compose.yml)を
+または同梱の[`docker/docker-compose.yml`](https://github.com/flyingsquirrel0419/headless-use/blob/main/docker/docker-compose.yml)を
 使ってください。
 
 ## 制限事項
@@ -402,7 +421,7 @@ Playwrightラッパーではありません。
 
 ## セキュリティ
 
-[SECURITY.md](SECURITY.md)参照。要点：CDPは`127.0.0.1`のみに
+[SECURITY.md](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md)参照。要点：CDPは`127.0.0.1`のみに
 バインド、トレースでのシークレットマスキング（パスワードフィールドの自動検出
 含む）、エージェント提供のファイルパス（`trace.start`、`replay`）は作業
 ディレクトリに制限、Chromeサイト分離は維持、ホストallow/denyポリシーが
@@ -415,12 +434,13 @@ URLはホストルールをすり抜けられません。ライブビューア�
 
 ## コミュニティ
 
-- [Contributing](CONTRIBUTING.md) — 開発環境、コード標準、PRプロセス
-- [Code of Conduct](CODE_OF_CONDUCT.md) — コミュニティ標準
-- [Security Policy](SECURITY.md) — 脆弱性報告
-- [Changelog](CHANGELOG.md) — リリース履歴
+- [Contributing](https://github.com/flyingsquirrel0419/headless-use/blob/main/CONTRIBUTING.md) — 開発環境、コード標準、PRプロセス
+- [Release Guide](https://github.com/flyingsquirrel0419/headless-use/blob/main/docs/releasing.md) — 公開、Actions Secrets、ビルド証明
+- [Code of Conduct](https://github.com/flyingsquirrel0419/headless-use/blob/main/CODE_OF_CONDUCT.md) — コミュニティ標準
+- [Security Policy](https://github.com/flyingsquirrel0419/headless-use/blob/main/SECURITY.md) — 脆弱性報告
+- [Changelog](https://github.com/flyingsquirrel0419/headless-use/blob/main/CHANGELOG.md) — リリース履歴
 - [Discussions](https://github.com/flyingsquirrel0419/headless-use/discussions) — 質問とアイデア
 
 ## ライセンス
 
-Apache License, Version 2.0。[LICENSE](LICENSE)参照。
+Apache License, Version 2.0。[LICENSE](https://github.com/flyingsquirrel0419/headless-use/blob/main/LICENSE)参照。

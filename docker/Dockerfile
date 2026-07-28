@@ -8,17 +8,25 @@
 # browser. We install only the shared libraries Chromium needs to keep the
 # image small.
 
-FROM rust:1-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /build
 # Cache dependencies
 COPY Cargo.toml Cargo.lock* build.rs ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs && echo '' > src/lib.rs \
-    && cargo build --release || true
+    && cargo build --locked --release || true
 COPY src ./src
 COPY tests ./tests
-RUN cargo build --release
+RUN cargo build --locked --release
 
 FROM debian:bookworm-slim AS runtime
+ARG VERSION=dev
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="headless-use" \
+      org.opencontainers.image.description="Computer use for web development agents, built for headless Linux and CI" \
+      org.opencontainers.image.source="https://github.com/flyingsquirrel0419/headless-use" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$VCS_REF"
 # Chromium runtime deps + fonts (including CJK for screenshot fidelity).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
