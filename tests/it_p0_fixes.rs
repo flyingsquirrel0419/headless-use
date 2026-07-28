@@ -84,8 +84,7 @@ async fn p0_stale_reference_detected_after_navigation() {
     let result = s.resolve_ref(ref_a).await;
     assert!(
         matches!(result, Err(ref e) if matches!(e, headless_use::BrowserError::StaleReference(_))),
-        "expected StaleReference error, got: {:?}",
-        result
+        "expected StaleReference error, got: {result:?}"
     );
 
     // After re-observing, references should work again.
@@ -98,8 +97,7 @@ async fn p0_stale_reference_detected_after_navigation() {
     let resolve_result = s.resolve_ref(ref_b).await;
     assert!(
         resolve_result.is_ok(),
-        "fresh reference should resolve: {:?}",
-        resolve_result
+        "fresh reference should resolve: {resolve_result:?}"
     );
     s.shutdown().await;
 }
@@ -187,6 +185,6 @@ async fn p0_wait_detects_ongoing_network_activity() {
     // The page may or may not be stable depending on timing, but the important
     // thing is that the in-flight counter is being read correctly (not always 0).
     // We accept either result as long as it doesn't panic.
-    assert!(result.is_ok(), "wait should not error: {:?}", result);
+    assert!(result.is_ok(), "wait should not error: {result:?}");
     s.shutdown().await;
 }

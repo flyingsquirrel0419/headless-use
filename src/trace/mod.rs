@@ -91,7 +91,7 @@ impl Trace {
             "action": { "type": kind, "params": safe_params },
         });
         if let Some(f) = self.actions_file.as_mut() {
-            let line = format!("{}\n", entry);
+            let line = format!("{entry}\n");
             let written = match f.write_all(line.as_bytes()).await {
                 Ok(()) => f.flush().await,
                 Err(e) => Err(e),

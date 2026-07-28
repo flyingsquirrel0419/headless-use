@@ -192,7 +192,7 @@ async fn rpc_screenshot_with_element_works() {
         .find(|e| e.role == "button" && e.name.contains("로그인"))
         .map(|e| e.ref_id)
         .expect("submit button not found");
-    let ref_token = format!("@g{}:e{}", gen, submit);
+    let ref_token = format!("@g{gen}:e{submit}");
 
     // RPC dispatch with element reference.
     let params = serde_json::json!({ "element": ref_token });

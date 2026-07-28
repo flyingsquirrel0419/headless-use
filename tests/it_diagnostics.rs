@@ -33,8 +33,7 @@ async fn console_collects_errors_and_warns() {
     let entries = s.console().await.unwrap();
     assert!(
         entries.iter().any(|e| e.level == ConsoleLevel::Error),
-        "expected at least one error entry, got: {:?}",
-        entries
+        "expected at least one error entry, got: {entries:?}"
     );
     // Trigger a warning.
     let obs = s.observe().await.unwrap();
@@ -60,8 +59,7 @@ async fn console_collects_errors_and_warns() {
     let entries2 = s.console().await.unwrap();
     assert!(
         entries2.iter().any(|e| e.level == ConsoleLevel::Warning),
-        "expected a warning after click: {:?}",
-        entries2
+        "expected a warning after click: {entries2:?}"
     );
     s.shutdown().await;
 }
@@ -96,8 +94,7 @@ async fn network_collects_failed_and_500() {
         failed
             .iter()
             .any(|e| e.status.map(|s| s == 404 || s >= 500).unwrap_or(false) || e.failed.is_some()),
-        "expected a failed/5xx request, got: {:?}",
-        failed
+        "expected a failed/5xx request, got: {failed:?}"
     );
     s.shutdown().await;
 }
@@ -113,7 +110,7 @@ async fn wait_returns_stable() {
         })
         .await
         .unwrap();
-    assert!(r.stable, "page should stabilize: {:?}", r);
+    assert!(r.stable, "page should stabilize: {r:?}");
     s.shutdown().await;
 }
 

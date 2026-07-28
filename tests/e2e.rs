@@ -105,8 +105,7 @@ async fn full_e2e_login_drag_trace_screenshot() {
         !console
             .iter()
             .any(|e| e.level == headless_use::session::ConsoleLevel::Error),
-        "unexpected console errors: {:?}",
-        console
+        "unexpected console errors: {console:?}"
     );
 
     // 6. Switch to a drag fixture and drag a slider.
@@ -148,8 +147,7 @@ async fn full_e2e_login_drag_trace_screenshot() {
     let net = s.network().await.unwrap();
     assert!(
         !net.iter().any(|e| e.failed.is_some()),
-        "unexpected failed requests: {:?}",
-        net
+        "unexpected failed requests: {net:?}"
     );
 
     // 10. Shutdown and verify trace artifacts.

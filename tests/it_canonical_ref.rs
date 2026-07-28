@@ -33,7 +33,7 @@ async fn observe_output_includes_canonical_ref_token() {
     // The compact text must also use the real generation (not hardcoded 1).
     let compact = obs.to_compact();
     assert!(
-        compact.contains(&format!("@g{}:e", gen)),
+        compact.contains(&format!("@g{gen}:e")),
         "compact output should use generation {gen}, got: {compact}"
     );
     s.shutdown().await;
@@ -79,17 +79,14 @@ async fn button_click_navigation_invalidates_references() {
     let gen_after = s.nav_generation_value();
     assert!(
         gen_after > gen_before,
-        "button-click navigation should increment nav_generation via Page.frameNavigated (before={}, after={})",
-        gen_before,
-        gen_after
+        "button-click navigation should increment nav_generation via Page.frameNavigated (before={gen_before}, after={gen_after})"
     );
 
     // The old reference should now be stale (its nav_generation no longer matches).
     let result = s.resolve_ref(btn).await;
     assert!(
         matches!(result, Err(ref e) if matches!(e, headless_use::BrowserError::StaleReference(_))),
-        "old reference should be stale after button-click navigation, got: {:?}",
-        result
+        "old reference should be stale after button-click navigation, got: {result:?}"
     );
     s.shutdown().await;
 }
