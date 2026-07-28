@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `doctor` no longer returns failure when the explicitly optional Xvfb binary
+  is absent. Missing optional tools are shown with a neutral mark; required
+  browser, CDP, screenshot, font, shared-memory, and filesystem checks still
+  produce a non-zero exit code. This restores the documented Xvfb-free Docker
+  installation check.
+
 ## [1.0.0] - 2026-07-27
 
 First stable release. The **core browser-control API** (serve/run/mcp/launch,

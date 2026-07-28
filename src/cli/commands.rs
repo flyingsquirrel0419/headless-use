@@ -7,6 +7,19 @@ use crate::cli::{output, DewiggleArgs, LaunchArgs, RunArgs, ViewArgs};
 use crate::observe::parse_ref;
 use crate::session::Session;
 
+// [Decision Log]
+// - Intent: Make `doctor` fail only when a capability required by the default runtime is broken.
+// - Previous implementation and constraints: Every displayed check contributed to the exit code, so a missing optional Xvfb made the Xvfb-free Docker image unhealthy even when Chromium, CDP, and screenshots worked.
+// - Alternatives considered: Bundle Xvfb in every image; remove the Xvfb check; distinguish required and optional checks.
+// - Chosen approach: Keep optional checks visible, render missing optional tools neutrally, and exclude them from the failure exit code.
+// - Why this approach over the alternatives: Xvfb remains useful diagnostic context but is intentionally not a dependency of the default headless Chromium path.
+// - Pros, cons, and impact: `doctor` accurately reports runtime health and preserves the No Xvfb promise; callers that treated optional-tool absence as a hard failure now receive success.
+type DoctorCheck = (bool, bool, String, Option<String>);
+
+fn doctor_has_required_failure(checks: &[DoctorCheck]) -> bool {
+    checks.iter().any(|(ok, required, _, _)| *required && !*ok)
+}
+
 /// Best-effort explanation for a failed browser launch.
 ///
 /// Chrome's own diagnostics go to a stderr we deliberately discard, so the
@@ -43,7 +56,7 @@ fn launch_failure_hint(error: &str) -> String {
 
 /// Run the `doctor` command: diagnose the environment.
 pub async fn doctor() -> i32 {
-    let mut checks: Vec<(bool, String, Option<String>)> = Vec::new();
+    let mut checks: Vec<DoctorCheck> = Vec::new();
 
     // OS
     let os = std::fs::read_to_string("/etc/os-release")
@@ -58,6 +71,7 @@ pub async fn doctor() -> i32 {
         .unwrap_or_else(|| std::env::consts::OS.to_string());
     checks.push((
         true,
+        true,
         "OS".into(),
         Some(format!("{os} {}", std::env::consts::ARCH)),
     ));
@@ -65,10 +79,15 @@ pub async fn doctor() -> i32 {
     // Browser
     match discover_browser() {
         Ok(p) => {
-            checks.push((true, "Browser path".into(), Some(p.display().to_string())));
+            checks.push((
+                true,
+                true,
+                "Browser path".into(),
+                Some(p.display().to_string()),
+            ));
         }
         Err(e) => {
-            checks.push((false, "Browser path".into(), Some(e.to_string())));
+            checks.push((false, true, "Browser path".into(), Some(e.to_string())));
         }
     }
 
@@ -79,22 +98,22 @@ pub async fn doctor() -> i32 {
         match Browser::launch(opts.with_no_sandbox_for_root()).await {
             Ok(b) => {
                 if let Ok(v) = b.process().version().await {
-                    checks.push((true, "Browser version".into(), Some(v)));
+                    checks.push((true, true, "Browser version".into(), Some(v)));
                 }
                 // Quick CDP + screenshot test.
                 match b.new_page().await {
                     Ok(page) => match page.screenshot(false, None).await {
                         Ok(data) => {
                             let ok = !data.is_empty();
-                            checks.push((ok, "CDP connection + screenshot".into(), None));
+                            checks.push((ok, true, "CDP connection + screenshot".into(), None));
                             browser_ok = ok;
                         }
                         Err(e) => {
-                            checks.push((false, "Screenshot".into(), Some(e.to_string())));
+                            checks.push((false, true, "Screenshot".into(), Some(e.to_string())));
                         }
                     },
                     Err(e) => {
-                        checks.push((false, "New page".into(), Some(e.to_string())));
+                        checks.push((false, true, "New page".into(), Some(e.to_string())));
                     }
                 }
                 b.close().await;
@@ -104,14 +123,14 @@ pub async fn doctor() -> i32 {
                 // can act on, and this is the one check most likely to fail on
                 // a fresh machine. Attach the likely cause when we can name it.
                 let detail = format!("{e}{}", launch_failure_hint(&e.to_string()));
-                checks.push((false, "Browser launch".into(), Some(detail)));
+                checks.push((false, true, "Browser launch".into(), Some(detail)));
             }
         }
     }
 
     // Keyboard + Korean font (fontconfig).
     let korean = !crate::util::korean_font_available().is_empty();
-    checks.push((korean, "Korean font".into(), None));
+    checks.push((korean, true, "Korean font".into(), None));
 
     // /dev/shm size.
     let shm = std::fs::metadata("/dev/shm").is_ok();
@@ -120,11 +139,16 @@ pub async fn doctor() -> i32 {
     let shm_label = shm_size
         .map(|s| format!("{s}MB"))
         .unwrap_or_else(|| "unknown".into());
-    checks.push((shm_ok, "/dev/shm".into(), Some(shm_label)));
+    checks.push((shm_ok, true, "/dev/shm".into(), Some(shm_label)));
 
     // Xvfb presence.
     let xvfb = which_path("Xvfb");
-    checks.push((xvfb, "Xvfb (optional)".into(), None));
+    checks.push((
+        xvfb,
+        false,
+        "Xvfb (optional)".into(),
+        (!xvfb).then(|| "not installed; default Chromium mode does not need it".into()),
+    ));
 
     // Temp dir writable.
     let tmp_ok = std::env::temp_dir()
@@ -132,17 +156,23 @@ pub async fn doctor() -> i32 {
         .with_extension("tmp");
     let tmp_writable = std::fs::write(&tmp_ok, b"x").is_ok();
     let _ = std::fs::remove_file(&tmp_ok);
-    checks.push((tmp_writable, "Temp dir writable".into(), None));
+    checks.push((tmp_writable, true, "Temp dir writable".into(), None));
 
     let _ = browser_ok;
-    for (ok, label, detail) in &checks {
-        let mark = if *ok { "✓" } else { "✗" };
+    for (ok, required, label, detail) in &checks {
+        let mark = if *ok {
+            "✓"
+        } else if *required {
+            "✗"
+        } else {
+            "–"
+        };
         match detail {
             Some(d) => println!("{mark} {label}: {d}"),
             None => println!("{mark} {label}"),
         }
     }
-    if checks.iter().any(|(ok, _, _)| !*ok) {
+    if doctor_has_required_failure(&checks) {
         1
     } else {
         0
@@ -595,4 +625,29 @@ async fn run_dewiggle(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::{doctor_has_required_failure, DoctorCheck};
+
+    fn check(ok: bool, required: bool) -> DoctorCheck {
+        (ok, required, "test".into(), None)
+    }
+
+    #[test]
+    fn missing_optional_check_does_not_fail_doctor() {
+        assert!(!doctor_has_required_failure(&[
+            check(true, true),
+            check(false, false),
+        ]));
+    }
+
+    #[test]
+    fn missing_required_check_fails_doctor() {
+        assert!(doctor_has_required_failure(&[
+            check(false, true),
+            check(true, false),
+        ]));
+    }
 }
