@@ -29,16 +29,18 @@ The most important job of a comment is not to restate the code, but to explain:
 - Pros/cons of the choice.
 - Invariants that must hold when modifying.
 
-Use the `[Decision Log]` format for new features, complex logic, or structural changes:
+Use the `[Decision Log]` format for new features, complex logic, or structural
+changes. Write the entries in English so they are searchable and consistent
+with the rest of the codebase:
 
 ```text
 [Decision Log]
-- 목적과 의도:
-- 기존 구현 및 제약 조건:
-- 검토한 주요 대안:
-- 선택한 방식:
-- 다른 대안 대신 이 방식을 선택한 이유:
-- 장점, 단점 및 영향:
+- Intent:
+- Previous implementation and constraints:
+- Alternatives considered:
+- Chosen approach:
+- Why this approach over the alternatives:
+- Pros, cons, and impact:
 ```
 
 ## Module map
