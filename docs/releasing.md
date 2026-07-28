@@ -50,7 +50,7 @@ Secrets. Do not use repository variables for registry identities.
 
 | Secret | Purpose | Minimum access |
 | --- | --- | --- |
-| `NPM_TOKEN` | Publish `headless-use` to npm | Automation/granular token scoped to the package |
+| `NPM_TOKEN` | Publish `headless-use` to npm | Granular read/write token with **Bypass 2FA**; allow new packages for the first publish |
 | `CARGO_REGISTRY_TOKEN` | Publish `headless-use` to crates.io | Publish-new-versions permission for the crate |
 | `DOCKERHUB_USERNAME` | Select the Docker Hub namespace | Docker Hub account or organization name |
 | `DOCKERHUB_TOKEN` | Push the public Docker Hub image | Read/write for `<username>/headless-use` |
@@ -104,6 +104,9 @@ Resume an existing tag from the Actions page with **Run workflow** and enter the
 original `vX.Y.Z` tag. The workflow checks out that immutable tag while using the
 current workflow definition, so publishing can recover from an automation fix
 without moving the release tag or rebuilding an already published image.
+The npm step runs after the other immutable artifacts and reports a failed run
+only after those channels finish, so an npm credential problem cannot suppress
+the crates.io package or GitHub Release.
 
 ## Consumer verification
 

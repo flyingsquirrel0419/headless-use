@@ -264,18 +264,6 @@ jobs:
           subject-name: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/headless-use
           subject-digest: ${{ steps.container.outputs.digest }}
           push-to-registry: true
-      - name: Publish npm package if absent
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION_TAG: ${{ env.RELEASE_TAG }}
-        run: |
-          version="${VERSION_TAG#v}"
-          if npm view "headless-use@${version}" version >/dev/null 2>&1; then
-            echo "npm headless-use@${version} already exists; skipping"
-          else
-            npm publish "./release/headless-use-npm-${version}.tgz" \
-              --access public --provenance
-          fi
       - name: Publish crates.io package if absent
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -299,3 +287,25 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           files: release/*
           generate_release_notes: true
+      # Registry outages or credential mistakes must not prevent the immutable
+      # crates.io and GitHub artifacts from completing during partial recovery.
+      - name: Publish npm package if absent
+        id: npm-publish
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          version="${VERSION_TAG#v}"
+          if npm view "headless-use@${version}" version >/dev/null 2>&1; then
+            echo "npm headless-use@${version} already exists; skipping"
+          else
+            npm whoami
+            npm publish "./release/headless-use-npm-${version}.tgz" \
+              --access public --provenance
+          fi
+      - name: Report incomplete npm publication
+        if: ${{ steps.npm-publish.outcome == 'failure' }}
+        run: |
+          echo "error: other channels completed, but npm publication failed" >&2
+          exit 1
