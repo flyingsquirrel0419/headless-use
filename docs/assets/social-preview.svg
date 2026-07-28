@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <radialGradient id="glow" cx="78%" cy="18%" r="75%">
+      <stop offset="0" stop-color="#21324b"/>
+      <stop offset="0.55" stop-color="#101824"/>
+      <stop offset="1" stop-color="#080c12"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <circle cx="1035" cy="112" r="175" fill="#ff6b35" opacity="0.08" filter="url(#shadow)"/>
+  <rect x="72" y="70" width="10" height="32" rx="2" fill="#ff6b35"/>
+  <rect x="88" y="78" width="6" height="24" rx="2" fill="#ff6b35" opacity="0.72"/>
+  <text x="72" y="216" fill="#f2f5f9" font-family="Inter, system-ui, sans-serif" font-size="88" font-weight="800" letter-spacing="-4">headless-use</text>
+  <text x="76" y="301" fill="#c9d3e1" font-family="Inter, system-ui, sans-serif" font-size="42" font-weight="650">A real browser for coding agents</text>
+  <text x="76" y="357" fill="#8e9db2" font-family="Inter, system-ui, sans-serif" font-size="42" font-weight="550">on headless Linux</text>
+  <line x1="76" y1="438" x2="1204" y2="438" stroke="#2a374a" stroke-width="2"/>
+  <text x="76" y="513" fill="#ff8a5f" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="30" font-weight="700">Rust</text>
+  <text x="196" y="513" fill="#526177" font-family="ui-monospace, monospace" font-size="30">·</text>
+  <text x="234" y="513" fill="#b8c4d4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="30">CDP</text>
+  <text x="340" y="513" fill="#526177" font-family="ui-monospace, monospace" font-size="30">·</text>
+  <text x="378" y="513" fill="#b8c4d4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="30">MCP</text>
+  <text x="484" y="513" fill="#526177" font-family="ui-monospace, monospace" font-size="30">·</text>
+  <text x="522" y="513" fill="#62d79b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="30" font-weight="700">No Xvfb</text>
+  <text x="76" y="574" fill="#59687e" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22">github.com/flyingsquirrel0419/headless-use</text>
+</svg>

@@ -1,22 +1,36 @@
+[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
+
 # headless-use
 
-[English](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.md) | [한국어](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ko.md) | [日本語](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.ja.md) | [中文](https://github.com/flyingsquirrel0419/headless-use/blob/main/README.zh.md)
+**Give coding agents a real browser on headless Linux.**
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/flyingsquirrel0419/headless-use/main/docs/assets/demo.gif" alt="headless-use demo" width="720">
 </p>
 
+```bash
+npm install -g headless-use
+```
 
-> Computer use for web development agents, built for headless Linux and CI.
+- Real mouse and keyboard input through Chrome DevTools Protocol
+- Semantic references (`@g1:e1`) and screenshots
+- Console and network diagnostics
+- MCP and JSON-RPC
+- **No Playwright. No Xvfb.**
 
-`headless-use` is a lightweight browser runtime that lets AI coding agents **see,
-use, and debug** the web apps they build. It drives Chrome over the Chrome DevTools
-Protocol (CDP) with **real input events** — not JavaScript `element.click()` — and
-gives agents both screenshot-based "computer use" and token-light semantic
-references (`@g1:e1`, `@g1:e2`, …; `@eN` accepted as shorthand) to page elements.
+<!--
+[Decision Log]
+- Intent: Let a first-time visitor understand and install headless-use within ten seconds.
+- Previous implementation and constraints: The opening placed several explanatory paragraphs before the install command; the language selector must remain the first line for translated documentation access.
+- Alternatives considered: Keep the long introduction; lead with a feature comparison table; use a compact promise, demo, install command, and capability list.
+- Chosen approach: Keep the language selector first, followed by the product promise, demo, one-line npm install, and stable core capabilities.
+- Why this approach over the alternatives: It preserves the technical documentation while making the launch path immediately scannable.
+- Pros, cons, and impact: Faster comprehension and installation at the cost of moving nuance below the fold; experimental features remain in the Experimental section.
+-->
 
-It is a single Rust binary with no Node.js runtime, designed to run on GUI-less
-servers, Docker, and CI without Xvfb.
+`headless-use` is a lightweight Rust browser runtime for existing coding agents.
+It drives Chrome directly over CDP with real input events and runs on GUI-less
+servers, Docker, and CI.
 
 ---
 
