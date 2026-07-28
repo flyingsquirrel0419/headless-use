@@ -100,6 +100,10 @@ crates.io versions are detected and skipped. If only one container registry was
 updated, the existing manifest is copied to the missing registry instead of
 rebuilding the version tag. If both registries contain different digests, the
 workflow stops for manual investigation rather than overwriting either image.
+Resume an existing tag from the Actions page with **Run workflow** and enter the
+original `vX.Y.Z` tag. The workflow checks out that immutable tag while using the
+current workflow definition, so publishing can recover from an automation fix
+without moving the release tag or rebuilding an already published image.
 
 ## Consumer verification
 

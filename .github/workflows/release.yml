@@ -3,9 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: Existing release tag to resume (for example, v1.0.0)
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version_tag || github.ref }}
   cancel-in-progress: false
 
 # [Decision Log]
@@ -30,6 +36,7 @@ env:
   CARGO_TERM_COLOR: always
   PACKAGE_NAME: headless-use
   GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/headless-use
+  RELEASE_TAG: ${{ inputs.version_tag || github.ref_name }}
 
 jobs:
   build-and-test:
@@ -37,6 +44,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
@@ -49,7 +58,7 @@ jobs:
           sudo apt-get install -y chromium fonts-noto-cjk
           echo "HEADLESS_USE_BROWSER_PATH=$(command -v chromium)" >> "$GITHUB_ENV"
       - name: Validate release version
-        run: ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
+        run: ./scripts/check-release-version.sh "${RELEASE_TAG}"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
@@ -82,7 +91,7 @@ jobs:
           test -s /tmp/headless-use-smoke.png
       - name: Package binary and npm distribution
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
         run: |
           version="${VERSION#v}"
           archive="headless-use-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
@@ -97,7 +106,7 @@ jobs:
           (cd release && sha256sum -- ./*.tar.gz ./*.tgz > checksums.txt)
       - name: Verify downloadable package contents
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
         run: |
           version="${VERSION#v}"
           archive="release/headless-use-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
@@ -114,7 +123,7 @@ jobs:
           diff -u /tmp/expected-npm /tmp/actual-npm
       - name: Test packed npm CLI
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
         run: |
           mkdir -p /tmp/headless-use-npm
           npm install --prefix /tmp/headless-use-npm \
@@ -131,12 +140,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Build container
         run: |
           docker build \
             --file docker/Dockerfile \
-            --build-arg VERSION="${GITHUB_REF_NAME#v}" \
-            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg VERSION="${RELEASE_TAG#v}" \
+            --build-arg VCS_REF="$(git rev-parse HEAD)" \
             --tag headless-use:release-test .
       - name: Smoke-test container
         run: |
@@ -158,6 +169,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: actions/setup-node@v4
         with:
@@ -196,7 +209,7 @@ jobs:
         id: container
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          VERSION_TAG: ${{ github.ref_name }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
         run: |
           version="${VERSION_TAG#v}"
           ghcr_ref="${GHCR_IMAGE}:${version}"
@@ -209,7 +222,7 @@ jobs:
               --file docker/Dockerfile \
               --platform linux/amd64 \
               --build-arg VERSION="$version" \
-              --build-arg VCS_REF="$GITHUB_SHA" \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
               --provenance mode=max \
               --sbom true \
               --tag "$ghcr_ref" \
@@ -254,19 +267,19 @@ jobs:
       - name: Publish npm package if absent
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION_TAG: ${{ github.ref_name }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
         run: |
           version="${VERSION_TAG#v}"
           if npm view "headless-use@${version}" version >/dev/null 2>&1; then
             echo "npm headless-use@${version} already exists; skipping"
           else
-            npm publish "release/headless-use-npm-${version}.tgz" \
+            npm publish "./release/headless-use-npm-${version}.tgz" \
               --access public --provenance
           fi
       - name: Publish crates.io package if absent
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION_TAG: ${{ github.ref_name }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
         run: |
           version="${VERSION_TAG#v}"
           if curl --fail --silent --show-error \
@@ -283,5 +296,6 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release/*
           generate_release_notes: true
