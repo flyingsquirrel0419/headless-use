@@ -153,7 +153,7 @@ docker run --rm --network host --shm-size=1g \
 > ます — そのため上記例は同梱の`docker/docker-compose.yml`と同じく
 > `--security-opt seccomp=unconfined` + `--no-sandbox`を使います。信頼できる
 > 本番環境ではサンドボックスを有効のままseccompを調整する方を推奨します。
-> [docs/security.md](docs/security.md)参照。
+> [SECURITY.md](SECURITY.md)参照。
 
 ## 安定性：v1が保証するもの
 
@@ -330,7 +330,7 @@ headless-use serve --cursor-motion smooth    # 遅いがhoverメニュー向き
 > ヘッダーに残り、ストリーム自体は平文HTTPです — そのURLを入手した者、
 > あるいはトラフィックを見られる者は、ログイン済みコンテンツを含めページが
 > 表示するすべてを見られます。信頼できないネットワークではトンネルするか
-> TLSを前段に置いてください。[docs/security.md](docs/security.md)参照。
+> TLSを前段に置いてください。[SECURITY.md](SECURITY.md)参照。
 
 `serve`が受け付けるJSON-RPCメソッド：`browser.open`（別名`page.goto`）、
 `observe`、`screenshot`、`click`、`hover`、`mouse.move`、`mouse.down`、
@@ -402,7 +402,7 @@ Playwrightラッパーではありません。
 
 ## セキュリティ
 
-[docs/security.md](docs/security.md)参照。要点：CDPは`127.0.0.1`のみに
+[SECURITY.md](SECURITY.md)参照。要点：CDPは`127.0.0.1`のみに
 バインド、トレースでのシークレットマスキング（パスワードフィールドの自動検出
 含む）、エージェント提供のファイルパス（`trace.start`、`replay`）は作業
 ディレクトリに制限、Chromeサイト分離は維持、ホストallow/denyポリシーが

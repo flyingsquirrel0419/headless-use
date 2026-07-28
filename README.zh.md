@@ -145,7 +145,7 @@ docker run --rm --network host --shm-size=1g \
 > Chromium 沙箱 — 因此上面的示例与随附的 `docker/docker-compose.yml` 一致，
 > 使用 `--security-opt seccomp=unconfined` 加 `--no-sandbox`。在可信的生产
 > 环境中，建议保持沙箱开启并调整 seccomp。见
-> [docs/security.md](docs/security.md)。
+> [SECURITY.md](SECURITY.md)。
 
 ## 稳定性：v1 保证什么
 
@@ -314,7 +314,7 @@ headless-use serve --cursor-motion smooth    # 较慢，hover 菜单友好
 > 开放到网络，此时令牌为必需。令牌是 URL 中的 bearer 凭证，会留在 shell 和
 > 浏览器历史以及 `Referer` 头中，且流本身是明文 HTTP — 任何拿到该 URL 或能
 > 监听流量的人都能看到页面显示的一切，包括已登录内容。在不可信网络上请使用
-> 隧道或在前面加 TLS。见 [docs/security.md](docs/security.md)。
+> 隧道或在前面加 TLS。见 [SECURITY.md](SECURITY.md)。
 
 `serve` 接受的 JSON-RPC 方法包括：`browser.open`（别名 `page.goto`）、
 `observe`、`screenshot`、`click`、`hover`、`mouse.move`、`mouse.down`、
@@ -384,7 +384,7 @@ API（引用 + observe + 结构化错误）。它可以与 Playwright 并行用�
 
 ## 安全
 
-见 [docs/security.md](docs/security.md)。要点：CDP 仅绑定 `127.0.0.1`，trace
+见 [SECURITY.md](SECURITY.md)。要点：CDP 仅绑定 `127.0.0.1`，trace
 中脱敏密钥（包括密码字段自动检测），代理提供的文件路径（`trace.start`、
 `replay`）被限制在工作目录内，Chrome 站点隔离保持开启，主机 allow/deny 策略
 在导航时强制执行（`--allow-host`/`--deny-host`）— 同时导航被限制为

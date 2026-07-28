@@ -5,7 +5,7 @@
 //! agent: did it miss, did application logic reject it, or was it timing?
 //! Reporting what was actually hit and what observably followed removes the
 //! retry-and-screenshot loop. See the design spec
-//! (docs/superpowers/specs/2026-07-27-observe-click-feedback-design.md).
+//! (see the click-report design notes in the commit history).
 
 use serde_json::Value;
 

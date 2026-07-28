@@ -171,7 +171,7 @@ dewiggle remain **experimental** — see README "Stability".
 ### Fixed — security
 
 - **Agent-supplied file paths are now validated.** `util::validate_path_within`
-  existed but was never called, while the README and `docs/security.md` claimed
+  existed but was never called, while the README and `SECURITY.md` claimed
   traversal was rejected. `trace.start` (`base`) and `replay` (`runDir`) take
   paths straight from the agent; both are now confined to the working
   directory. Operator-supplied CLI paths are deliberately unaffected.
@@ -185,7 +185,7 @@ dewiggle remain **experimental** — see README "Stability".
 - **Viewer exposure is documented and warned about.** `--viewer-host` (added
   in an earlier change) can bind the unauthenticated MJPEG stream to all
   interfaces while the module doc still claimed loopback-only. The contradiction
-  is resolved, `README.md` and `docs/security.md` describe the exposure, and a
+  is resolved, `README.md` and `SECURITY.md` describe the exposure, and a
   warning is printed whenever the bind address is not loopback.
 - Report HTML now escapes quotes and the action-type field.
 

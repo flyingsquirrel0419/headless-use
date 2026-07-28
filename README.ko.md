@@ -152,7 +152,7 @@ docker run --rm --network host --shm-size=1g \
 > 있습니다 — 그래서 위 예제는 제공되는 `docker/docker-compose.yml`과
 > 동일하게 `--security-opt seccomp=unconfined` + `--no-sandbox`를 씁니다.
 > 신뢰할 수 있는 프로덕션에서는 샌드박스를 켜두고 seccomp을 조정하는 쪽을
-> 권장합니다. [docs/security.md](docs/security.md) 참조.
+> 권장합니다. [SECURITY.md](SECURITY.md) 참조.
 
 ## 안정성: v1이 보장하는 것
 
@@ -329,7 +329,7 @@ headless-use serve --cursor-motion smooth    # 느리지만 hover 메뉴 친화�
 > 헤더에 남고, 스트림 자체는 평문 HTTP입니다 — 그 URL을 얻거나 트래픽을 볼
 > 수 있는 누구든 로그인된 콘텐츠를 포함해 페이지가 보여주는 모든 것을
 > 봅니다. 신뢰할 수 없는 네트워크에서는 터널링하거나 TLS를 앞에 두세요.
-> [docs/security.md](docs/security.md) 참조.
+> [SECURITY.md](SECURITY.md) 참조.
 
 `serve`가 받는 JSON-RPC 메서드: `browser.open`(별칭 `page.goto`), `observe`,
 `screenshot`, `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`,
@@ -400,7 +400,7 @@ docker run --rm -i --network host --shm-size=1g \
 
 ## 보안
 
-[docs/security.md](docs/security.md) 참조. 핵심: CDP는 `127.0.0.1`에만
+[SECURITY.md](SECURITY.md) 참조. 핵심: CDP는 `127.0.0.1`에만
 바인드, 트레이스에서 시크릿 마스킹(비밀번호 필드 자동 감지 포함),
 에이전트가 제공한 파일 경로(`trace.start`, `replay`)는 작업 디렉터리로 제한,
 Chrome 사이트 격리 유지, 호스트 allow/deny 정책이 내비게이션에 강제됨

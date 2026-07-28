@@ -151,7 +151,7 @@ docker run --rm --network host --shm-size=1g \
 > hence `--security-opt seccomp=unconfined` plus `--no-sandbox` above, matching
 > the shipped `docker/docker-compose.yml`. For trusted production use prefer
 > keeping the sandbox on and adjusting seccomp instead. See
-> [docs/security.md](docs/security.md).
+> [SECURITY.md](SECURITY.md).
 
 ## Stability: what v1 guarantees
 
@@ -330,7 +330,7 @@ headless-use serve --cursor-motion smooth    # slower, hover-menu friendly
 > history and in `Referer` headers, and the stream itself is plain HTTP — anyone
 > who obtains that URL, or who can watch the traffic, sees whatever the page
 > shows, including logged-in content. Tunnel it or front it with TLS on an
-> untrusted network. See [docs/security.md](docs/security.md).
+> untrusted network. See [SECURITY.md](SECURITY.md).
 
 `serve` accepts JSON-RPC methods including: `browser.open` (alias `page.goto`),
 `observe`, `screenshot`, `click`, `hover`, `mouse.move`, `mouse.down`, `mouse.up`,
@@ -400,7 +400,7 @@ wrapper.
 
 ## Security
 
-See [docs/security.md](docs/security.md). Key points: CDP binds to `127.0.0.1`
+See [SECURITY.md](SECURITY.md). Key points: CDP binds to `127.0.0.1`
 only, secrets are masked in traces (including auto-detection of password fields),
 agent-supplied file paths (`trace.start`, `replay`) are confined to the working
 directory, Chrome site isolation stays on, and a host allow/deny policy is
